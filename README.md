@@ -1,14 +1,14 @@
-# IncidentPilot: Autonomous Production Incident Response System
+# IncidentPilot: Evidence-Grounded Multi-Agent Production Incident Investigation and Response System
 
 [![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/downloads/release/python-3110/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.110.0-009688.svg)](https://fastapi.tiangolo.com/)
 [![LangGraph](https://img.shields.io/badge/LangGraph-0.0.30-orange.svg)](https://github.com/langchain-ai/langgraph)
 [![Qdrant](https://img.shields.io/badge/Qdrant-Vector%20DB-red.svg)](https://qdrant.tech/)
-[![Tests](https://img.shields.io/badge/Tests-42%20passed-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/Tests-46%20passed-brightgreen.svg)](tests/)
 
-IncidentPilot is an autonomous multi-agent incident response system designed to investigate simulated production outages. Built with **Python 3.11, LangGraph, Groq LLM, Qdrant, SQLAlchemy, FastAPI, and Streamlit**, IncidentPilot coordinates specialized investigation agents across logs, metrics, deployment changes, and operational runbooks to formulate, challenge, and verify evidence-backed root cause diagnoses.
+IncidentPilot is an evidence-grounded multi-agent incident response system designed to investigate simulated production incidents. Built with **Python 3.11, LangGraph, Groq LLM, Qdrant, SQLAlchemy, FastAPI, and Streamlit**, IncidentPilot coordinates specialized investigation agents across logs, metrics, deployment changes, and operational runbooks to formulate, challenge, and verify evidence-backed root cause diagnoses and recommend human-gated remediation actions.
 
-Every diagnostic assertion is backed by strict evidence provenance: hypotheses cite verified telemetry IDs, a deterministic **Two-Layer Verification Agent** audits evidence to eliminate hallucinations, and destructive actions are protected by persistent human-in-the-loop operator approval.
+Every diagnostic assertion is backed by strict evidence provenance: hypotheses cite verified telemetry IDs, a deterministic **Two-Layer Verification Agent** audits evidence to eliminate hallucinations, and destructive actions are protected by persistent human-in-the-loop operator approval. Diagnosis does not automatically resolve the incident; successful investigations transition to `ROOT_CAUSE_IDENTIFIED` awaiting operator review.
 
 ---
 
@@ -146,7 +146,8 @@ IncidentPilot solves this by replacing ad-hoc prompt chains with a **determinist
 1. **Supervisor Agent** (`app/agents/supervisor.py`):
    - Formulates a targeted investigation plan based on incident symptoms and affected services.
    - Enforces an agent allowlist (`ALLOWED_AGENTS = {"logs", "deployments", "metrics", "runbook"}`).
-   - Consumes structured verification challenge feedback (`requested_agent_types`, `missing_evidence_types`, `suggested_time_window`) during re-investigation loops.
+   - When the planning LLM is unavailable, uses a conservative deterministic fallback plan (`["logs", "metrics", "runbook"]`), including `deployments` only if release or deployment signals are explicitly indicated in metadata.
+   - Consumes structured verification challenge feedback (`requested_agent_types`, `missing_evidence_types`, `suggested_time_window`) during adaptive re-investigation loops.
 
 2. **Log Investigation Agent** (`app/agents/logs.py`):
    - Executes deterministic SQL-backed queries against service logs within the requested `window_minutes` and query substring.
@@ -157,20 +158,22 @@ IncidentPilot solves this by replacing ad-hoc prompt chains with a **determinist
 
 4. **Metrics Agent** (`app/agents/metrics.py`):
    - Queries telemetry within `window_minutes` for targeted metric names: CPU utilization, memory thresholds, DB pool saturation, network packet loss, and latency percentiles.
+   - SQL query strictly filters timestamps using `Metric.timestamp >= since`.
 
 5. **Runbook / RAG Agent** (`app/agents/runbook.py`):
-   - Performs dense vector semantic retrieval against operational SRE runbooks in Qdrant.
-   - Matches operational failure modes to institutional remediation procedures with similarity scoring.
+   - Performs dense vector semantic retrieval against operational SRE runbooks in Qdrant using FastEmbed (`bge-small-en-v1.5`).
+   - Runbooks provide operational context and documented remediation procedures, but do **not** constitute independent empirical proof of an incident's cause.
 
 6. **Root Cause Analyst Agent** (`app/agents/root_cause.py`):
-   - Synthesizes findings strictly from the collected evidence catalog.
-   - Preserves cited evidence IDs (including invalid IDs) so Verification Layer 1 can detect hallucinations.
-   - Computes an explainable **Evidence Quality Score** with specific rationale factors.
+   - Synthesizes candidate hypotheses strictly from the collected evidence catalog.
+   - Preserves raw model-produced evidence citations (duplicate sanitized representations removed) so Verification Layer 1 can detect hallucinations.
+   - When LLM inference is unavailable, implements a conservative fallback that produces an explicitly inconclusive hypothesis (`selected_root_cause: "Inconclusive: automated causal inference unavailable"`, confidence ~0.20) rather than inventing ungrounded causal claims.
+   - Computes an explainable, heuristic **Evidence Quality Score** based on citation count, empirical source diversity, and contradictions (not a statistically calibrated probability).
 
 7. **Verification Agent** (`app/agents/verification.py`):
-   - Audits hypotheses against collected evidence.
-   - Layer 1 runs deterministic checks for hallucinated IDs, evidence sufficiency, multi-source empirical corroboration, and contradictions.
-   - Layer 2 executes semantic verification via Groq LLM. If Layer 2 is unavailable, status becomes `VERIFICATION_UNAVAILABLE` (never defaults to `verified=True`).
+   - Audits hypotheses against collected evidence using independent two-layer verification.
+   - **Layer 1 (Deterministic, Authoritative)**: Validates that cited IDs exist in collected telemetry, minimum evidence count is met ($\ge 2$), empirical source diversity spans $\ge 2$ independent empirical domains (`log`, `metric`, `deployment`), and no unaddressed contradictions exist. Log-derived analytics counts as part of the `log` domain, and runbooks do not count toward empirical diversity.
+   - **Layer 2 (Semantic Challenge)**: Challenges causal mechanism and plausibility via Groq LLM. If Layer 2 is unavailable or unconfigured, status becomes `VERIFICATION_UNAVAILABLE` (never defaults to `verified=True`). Layer 2 can never override a Layer 1 failure.
 
 ---
 
@@ -180,13 +183,13 @@ Every tool and collector emits evidence strictly complying with the canonical Py
 
 ```python
 class EvidenceItem(BaseModel):
-    evidence_id: str             # e.g., "LOG-101", "METRIC-1", "DEP-101", "RUNBOOK-01"
+    evidence_id: str                          # e.g., "LOG-101", "METRIC-1", "DEP-101", "RUNBOOK-01"
     source_type: Literal["log", "deployment", "metric", "runbook", "analytics"]
-    source: str                  # Origin name (e.g., "application_logs", "service_metrics")
-    service: str                 # Microservice identifier
-    timestamp: Optional[str]     # ISO 8601 UTC timestamp
-    finding: str                 # Factual observation summary
-    details: Dict[str, Any]      # Raw structured payload
+    source: str                               # Origin name (e.g., "application_logs", "service_metrics")
+    service: str                              # Microservice identifier
+    timestamp: Optional[str] = None           # ISO 8601 UTC timestamp
+    finding: str                              # Factual observation summary
+    details: Optional[Dict[str, Any]] = Field(default_factory=dict)  # Raw structured payload
 ```
 
 By enforcing this structure across all data collectors:
@@ -229,12 +232,13 @@ The Verification Agent separates deterministic mathematical assertions from LLM 
 ### Layer 1 Checks:
 1. **Hallucination Detection**: Ensures `supporting_evidence_ids` $\subseteq$ `{collected_evidence.evidence_id}`. Any fabricated ID triggers immediate rejection (`FABRICATED_EVIDENCE_ID`).
 2. **Sufficiency Check**: Rejects hypotheses supported by fewer than 2 distinct evidence items (`INSUFFICIENT_EVIDENCE`).
-3. **Empirical Source Diversity**: Requires at least two independent empirical source types (e.g., logs + metrics, or logs + deployments). Runbook guidance provides operational context but cannot serve as independent empirical proof (`LOW_SOURCE_DIVERSITY`).
+3. **Empirical Source Diversity**: Requires at least two independent empirical source domains (e.g., logs + metrics, or logs + deployments). Runbook guidance provides operational context and cannot serve as independent empirical proof. Log-derived analytics is treated as part of the log domain, not a separate empirical domain (`LOW_SOURCE_DIVERSITY`).
 4. **Contradiction Detection**: Flags unaddressed contradictory evidence (`UNRESOLVED_CONTRADICTION`).
 5. **Confidence Sanity**: Rejects invalid confidence scores outside `[0.0, 1.0]`.
+6. **Inconclusive Hypothesis Detection**: Rejects empty or explicitly inconclusive root-cause titles (`INSUFFICIENT_EVIDENCE`), ensuring conservative fallback diagnoses cannot falsely pass verification.
 
 ### Layer 2 Safety Rule:
-If Layer 2 semantic verification fails or is unavailable (e.g., no Groq API key configured), the system records `VERIFICATION_UNAVAILABLE`. It **never** defaults to `verified = True`.
+If Layer 2 semantic verification fails or is unavailable (e.g., no Groq API key configured), the system records `VERIFICATION_UNAVAILABLE`. It **never** defaults to `verified = True`. Layer 2 can never override a Layer 1 failure.
 
 ---
 
@@ -398,18 +402,18 @@ ALL EVALUATION BENCHMARKS PASSED SUCCESSFULLY.
 
 ### Pytest Verification Suite:
 ```
-============================== 42 passed in 2.22s ==============================
-- Supervisor allowlist validation & plan control: 4 tests
+============================== 46 passed in 2.37s ==============================
+- Supervisor allowlist validation, conservative fallback & plan control: 4 tests
 - Dynamic routing & unselected node skipping: 6 tests
 - Telemetry tool window & query parameter filtering: 8 tests
 - Hallucinated citation preservation & detection: 3 tests
-- Source diversity (two logs vs log+metric): 2 tests
+- Source diversity (empirical domains vs runbook, log+analytics): 4 tests
+- Conservative root-cause fallback & inconclusive handling: 2 tests
 - Two-layer verification & Layer 2 unavailability: 4 tests
 - Database models & schema migrations: 4 tests
 - API lifecycle, approval transitions & sanitized errors: 5 tests
-- Frontend decoupling verification: 1 test
+- Frontend decoupling & execution trace derivation: 2 tests
 - Scenarios (standard, paraphrased, insufficient): 4 tests
-- RAG retrieval & chunking: 2 tests
 ```
 
 ---
@@ -528,6 +532,12 @@ Services will be accessible at:
 
 ### 4. Why local FastEmbed ONNX instead of external embedding APIs?
 > **Answer**: During an incident response scenario, dependencies on external third-party embedding APIs introduce additional points of failure and network latency. FastEmbed executes the `BAAI/bge-small-en-v1.5` model locally via ONNX Runtime inside the service process, ensuring zero external API latency, zero per-token cost, and zero external dependency failure.
+
+### 5. Why are runbooks treated as operational guidance rather than empirical proof?
+> **Answer**: An operational runbook documents institutional procedures (e.g., "If connection pool fills, restart pool"). However, a runbook semantically matching an incident description does not prove that connection pool exhaustion caused this specific incident. Causal diagnosis requires independent empirical telemetry (logs, metrics, deployments). Runbooks inform diagnostic procedures and remediation selection, but Layer 1 verification requires at least two independent empirical source domains before validating a hypothesis.
+
+### 6. What happens when LLM inference fails or is unavailable?
+> **Answer**: Rather than synthesizing an artificial root cause from arbitrary heuristics (e.g. "first log + first metric = cause") or assigning high confidence (0.85), IncidentPilot implements a conservative fallback. It summarizes observed telemetry signals and outputs an explicitly inconclusive hypothesis (`selected_root_cause: "Inconclusive: automated causal inference unavailable"`, confidence ~0.20). Verification Layer 1 flags this as inconclusive (`INSUFFICIENT_EVIDENCE`), ensuring the system explicitly communicates uncertainty rather than fabricating false certainty.
 
 ---
 

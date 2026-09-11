@@ -127,24 +127,12 @@ if curr_inc:
         inv_id = inv_data.get("id")
         history = report.get("agent_history", [])
 
-        # Derive actual executed agents dynamically from execution history
-        executed_agents = set()
-        for h in history:
-            text = (h.get("agent", "") + " " + h.get("action", "")).lower()
-            if "supervisor" in text:
-                executed_agents.add("supervisor")
-            if "log" in text:
-                executed_agents.add("logs")
-            if "deployment" in text:
-                executed_agents.add("deployments")
-            if "metric" in text:
-                executed_agents.add("metrics")
-            if "runbook" in text or "rag" in text:
-                executed_agents.add("runbook")
-            if "root cause" in text:
-                executed_agents.add("root_cause")
-            if "verification" in text:
-                executed_agents.add("verification")
+        # Derive actual executed agents directly from machine-readable execution history
+        executed_agents = {
+            h.get("agent_key")
+            for h in history
+            if h.get("agent_key") and h.get("status") == "EXECUTED"
+        }
 
         st.subheader("1. Agent Orchestration Trace (Execution Status)")
         agent_steps = [

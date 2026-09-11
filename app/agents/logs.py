@@ -45,7 +45,9 @@ def run_log_agent(state: InvestigationState) -> InvestigationState:
     )
 
     state["agent_history"].append({
+        "agent_key": "logs",
         "agent": "Log Investigation Agent",
+        "status": "EXECUTED",
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "iteration": iteration,
         "action": f"Executed search_logs and get_error_frequency for {service} (window: {window_minutes}m, query: {log_query or 'none'})",

@@ -185,32 +185,40 @@ def _deterministic_audit(
             []
         )
 
-    # 4. Source diversity check: At least two independent empirical source types required
-    # Runbook is operational guidance, NOT an independent empirical source
+    # 4. Source diversity check: At least two independent empirical source domains required.
+    # Empirical domains: log (including analytics), metric, deployment.
+    # Runbook is operational guidance, NOT an independent empirical domain.
+    # Log-derived analytics does NOT count as a separate domain from logs.
     supporting_items = [existing_evidence_map[eid] for eid in supporting_ids if eid in existing_evidence_map]
-    has_logs = any(item.get("source_type") in ("log", "analytics") for item in supporting_items)
-    has_metrics = any(item.get("source_type") == "metric" for item in supporting_items)
-    has_deployments = any(item.get("source_type") == "deployment" for item in supporting_items)
+    empirical_domains = set()
+    for item in supporting_items:
+        st = item.get("source_type")
+        if st in ("log", "analytics"):
+            empirical_domains.add("log")
+        elif st == "metric":
+            empirical_domains.add("metric")
+        elif st == "deployment":
+            empirical_domains.add("deployment")
 
-    empirical_domain_count = sum([has_logs, has_metrics, has_deployments])
-
-    if empirical_domain_count < 2:
+    if len(empirical_domains) < 2:
         missing = []
         requested = []
-        if not has_metrics:
+        if "metric" not in empirical_domains:
             missing.append("metric")
             requested.append("metrics")
-        if not has_deployments:
+        if "deployment" not in empirical_domains:
             missing.append("deployment")
             requested.append("deployments")
-        if not has_logs:
+        if "log" not in empirical_domains:
             missing.append("log")
             requested.append("logs")
 
         return (
             False,
             "LOW_SOURCE_DIVERSITY",
-            f"Verification requires at least two independent empirical source types (logs, metrics, deployments), but only found {empirical_domain_count}. Runbook guidance is operational and cannot serve as independent empirical proof.",
+            f"Verification requires at least two independent empirical source types / domains (logs, metrics, deployments), "
+            f"but found {len(empirical_domains)} ({sorted(list(empirical_domains)) if empirical_domains else 'none'}). "
+            f"Runbook guidance is operational context and log-derived analytics does not constitute a separate empirical domain.",
             missing,
             requested
         )
@@ -262,7 +270,9 @@ def _handle_verification_outcome(
         verdict_str = "CHALLENGED"
 
     history_entry = {
+        "agent_key": "verification",
         "agent": "Verification Agent",
+        "status": "EXECUTED",
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "iteration": iteration,
         "action": "Conducted independent two-layer evidence and causal verification",

@@ -19,7 +19,9 @@ def run_supervisor_agent(state: InvestigationState) -> InvestigationState:
     state["executed_specialists"] = []
 
     history_entry = {
+        "agent_key": "supervisor",
         "agent": "Supervisor Agent",
+        "status": "EXECUTED",
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "iteration": iteration,
     }
@@ -126,17 +128,25 @@ def run_supervisor_agent(state: InvestigationState) -> InvestigationState:
 
 
 def _create_initial_plan(service: str, title: str, description: str) -> Dict[str, Any]:
-    """Generates a structured investigation plan tailored to incident symptoms without benchmark keywords."""
+    """Conservative deterministic fallback plan when planning LLM is unavailable.
+
+    Default plan investigates telemetry (logs, metrics) and operational context (runbook).
+    Deployments are included only when there is an explicit signal in incident metadata
+    that deployment or release context is relevant.
+    """
     text = f"{title} {description}".lower()
     selected_agents = ["logs", "metrics", "runbook"]
 
-    # Include deployments if release, version, or deployment signals are indicated
-    if any(k in text for k in ["deploy", "release", "version", "update", "rolled", "commit", "crash", "outage", "spike"]):
+    # Include deployments only if explicit release/deployment signals exist
+    if "deploy" in text or "release" in text:
         selected_agents.append("deployments")
 
     return {
         "focus": f"Investigate service anomalies and degradation on {service}",
         "required_agents": selected_agents,
-        "strategy": f"Retrieve error logs, telemetry metrics, deployment correlation, and runbooks for {service}.",
+        "strategy": (
+            "When the planning LLM is unavailable, IncidentPilot uses a conservative deterministic fallback plan "
+            f"querying logs, metrics, and operational runbooks for {service}."
+        ),
         "window_minutes": 60
     }

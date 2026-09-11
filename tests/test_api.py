@@ -108,6 +108,15 @@ def test_investigate_and_reject_lifecycle(api_client):
     assert dup_rej.status_code == 400
     assert "already rejected" in dup_rej.json()["detail"].lower()
 
+    # Cannot approve an already rejected investigation
+    invalid_appr = api_client.post(f"/investigations/{inv_id}/approve", json={
+        "operator": "oncall-dev-sam",
+        "decision": "APPROVED",
+        "notes": "Trying to approve rejected investigation."
+    })
+    assert invalid_appr.status_code == 400
+    assert "cannot approve" in invalid_appr.json()["detail"].lower()
+
 
 def test_api_error_handling_does_not_leak_internals(api_client):
     """API must catch internal exceptions and return a sanitized generic 500 error."""
