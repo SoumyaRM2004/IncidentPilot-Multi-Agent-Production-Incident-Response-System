@@ -91,13 +91,15 @@ def start_investigation(incident_id: str, db: Session = Depends(get_db)):
     db.add(inv_record)
     db.commit()
 
+    reported_at_str = incident.created_at.isoformat() if incident.created_at else now.isoformat()
     incident_dict = {
         "id": incident.id,
         "title": incident.title,
         "description": incident.description,
         "service": incident.service,
         "severity": incident.severity,
-        "created_at": incident.created_at.isoformat() if incident.created_at else now.isoformat()
+        "created_at": reported_at_str,
+        "reported_at": reported_at_str
     }
 
     try:

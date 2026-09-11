@@ -40,15 +40,15 @@ def test_create_and_get_incident(api_client):
 
 
 def test_investigate_and_approve_lifecycle(api_client, mock_layer2_verified):
-    # 1. Trigger investigation against INC-001
-    resp = api_client.post("/incidents/INC-001/investigate")
+    # 1. Trigger investigation against INC-002 (seeded incident with telemetry around reported_at)
+    resp = api_client.post("/incidents/INC-002/investigate")
     assert resp.status_code == 200
     data = resp.json()
     assert data["approval_status"] == "PENDING_APPROVAL"
     inv_id = data["id"]
 
     # 2. Check incident status is ROOT_CAUSE_IDENTIFIED (NEVER RESOLVED)
-    inc_resp = api_client.get("/incidents/INC-001")
+    inc_resp = api_client.get("/incidents/INC-002")
     assert inc_resp.status_code == 200
     inc_data = inc_resp.json()
     assert inc_data["status"] == "ROOT_CAUSE_IDENTIFIED"

@@ -19,10 +19,13 @@ def run_log_agent(state: InvestigationState) -> InvestigationState:
     window_minutes = plan.get("window_minutes", 60)
     log_query = plan.get("log_query")
 
+    incident = state.get("incident", {})
+    end_time = incident.get("reported_at") or incident.get("created_at")
+
     # Deterministic log inspections
-    error_freq = get_error_frequency(service=service, minutes=window_minutes)
-    error_logs = search_logs(service=service, query=log_query, level="ERROR", window_minutes=window_minutes, limit=5)
-    service_logs = get_service_logs(service=service, window_minutes=window_minutes, limit=5) if not error_logs else []
+    error_freq = get_error_frequency(service=service, minutes=window_minutes, end_time=end_time)
+    error_logs = search_logs(service=service, query=log_query, level="ERROR", window_minutes=window_minutes, end_time=end_time, limit=5)
+    service_logs = get_service_logs(service=service, window_minutes=window_minutes, end_time=end_time, limit=5) if not error_logs else []
 
     new_evidence = []
 

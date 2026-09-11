@@ -21,6 +21,10 @@ class Incident(Base):
 
     investigations = relationship("Investigation", back_populates="incident", cascade="all, delete-orphan")
 
+    @property
+    def reported_at(self):
+        return self.created_at
+
 
 class Deployment(Base):
     __tablename__ = "deployments"
