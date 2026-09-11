@@ -15,6 +15,15 @@ def setup_test_database():
     seed_database()
 
 
+@pytest.fixture(autouse=True)
+def reset_rate_limit_between_tests():
+    """Ensure rate-limit state from real LLM calls does not leak across tests."""
+    from app.agents.llm import reset_rate_limit_state
+    reset_rate_limit_state()
+    yield
+    reset_rate_limit_state()
+
+
 @pytest.fixture
 def db_session():
     """Yields a database session for test verification."""

@@ -1,5 +1,5 @@
 from typing import TypedDict, List, Dict, Any, Optional, Literal
-from pydantic import BaseModel, Field, ConfigDict, field_validator
+from pydantic import BaseModel, Field, ConfigDict, field_validator, model_validator
 
 
 ALLOWED_AGENTS = {"logs", "deployments", "metrics", "runbook"}
@@ -26,6 +26,96 @@ class InvestigationPlanModel(BaseModel):
     log_query: Optional[str] = Field(None, description="Specific keyword or error pattern to search in logs")
     metric_names: Optional[List[str]] = Field(None, description="Target metrics to inspect")
     window_minutes: int = Field(default=60, ge=1, le=1440, description="Time window in minutes to inspect")
+
+    @model_validator(mode="before")
+    @classmethod
+    def unwrap_and_normalize(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+
+        # Handle nested wrappers like {"investigation_plan": ...} or {"plan": ...}
+        inner = data.get("investigation_plan") or data.get("plan")
+        extracted: Dict[str, Any] = {}
+
+        if isinstance(inner, dict):
+            extracted = dict(inner)
+            # Preserve remaining top-level fields
+            for k, v in data.items():
+                if k not in ("investigation_plan", "plan") and k not in extracted and v is not None:
+                    extracted[k] = v
+        elif isinstance(inner, list):
+            # If investigation_plan is a list of steps/agents: e.g. [{"agent": "logs", ...}, ...]
+            agents: List[str] = []
+            f_parts: List[str] = []
+            s_parts: List[str] = []
+            log_query = data.get("log_query")
+            metric_names = list(data.get("metric_names") or [])
+            window_minutes = data.get("window_minutes")
+
+            for item in inner:
+                if isinstance(item, dict):
+                    for ak in ("agent", "required_agents", "specialist", "name"):
+                        val = item.get(ak)
+                        if isinstance(val, str) and val.lower().strip() in ALLOWED_AGENTS:
+                            clean_agent = val.lower().strip()
+                            if clean_agent not in agents:
+                                agents.append(clean_agent)
+                        elif isinstance(val, list):
+                            for a in val:
+                                if isinstance(a, str) and a.lower().strip() in ALLOWED_AGENTS:
+                                    clean_agent = a.lower().strip()
+                                    if clean_agent not in agents:
+                                        agents.append(clean_agent)
+                    for fk in ("focus", "title", "objective", "target"):
+                        if item.get(fk) and str(item[fk]) not in f_parts:
+                            f_parts.append(str(item[fk]))
+                    for sk in ("strategy", "action", "reason", "description"):
+                        if item.get(sk) and str(item[sk]) not in s_parts:
+                            s_parts.append(str(item[sk]))
+                    if not log_query and item.get("log_query"):
+                        log_query = item.get("log_query")
+                    if item.get("metric_names"):
+                        m_val = item.get("metric_names")
+                        if isinstance(m_val, list):
+                            metric_names.extend([m for m in m_val if m not in metric_names])
+                        elif isinstance(m_val, str) and m_val not in metric_names:
+                            metric_names.append(m_val)
+                    if not window_minutes and item.get("window_minutes"):
+                        window_minutes = item.get("window_minutes")
+
+            extracted = {
+                "required_agents": agents or data.get("required_agents", []),
+                "focus": data.get("focus") or ("; ".join(f_parts) if f_parts else "Investigate incident symptoms"),
+                "strategy": data.get("strategy") or ("; ".join(s_parts) if s_parts else "Execute diagnostic queries"),
+            }
+            if log_query:
+                extracted["log_query"] = log_query
+            if metric_names:
+                extracted["metric_names"] = metric_names
+            if window_minutes:
+                extracted["window_minutes"] = window_minutes
+
+            for k, v in data.items():
+                if k not in ("investigation_plan", "plan") and k not in extracted and v is not None:
+                    extracted[k] = v
+        else:
+            extracted = dict(data)
+
+        # Normalize common aliases on extracted dict
+        if not extracted.get("focus"):
+            extracted["focus"] = extracted.get("title") or extracted.get("objective") or extracted.get("description") or "Investigate incident symptoms"
+
+        if not extracted.get("strategy"):
+            extracted["strategy"] = extracted.get("description") or extracted.get("action") or extracted.get("reason") or "Execute diagnostic queries"
+
+        if not extracted.get("required_agents"):
+            if "agents" in extracted:
+                extracted["required_agents"] = extracted["agents"]
+            elif "agent" in extracted:
+                val = extracted["agent"]
+                extracted["required_agents"] = [val] if isinstance(val, str) else val
+
+        return extracted
 
     @field_validator("required_agents")
     @classmethod

@@ -35,7 +35,8 @@ def run_metrics_agent(state: InvestigationState) -> InvestigationState:
             for m in m_records:
                 if not any(e["evidence_id"] == m["evidence_id"] for e in state["collected_evidence"]):
                     new_evidence.append(m)
-    else:
+
+    if not new_evidence:
         all_metrics = get_service_metrics(
             service=service,
             window_minutes=window_minutes,

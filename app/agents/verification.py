@@ -2,7 +2,13 @@ import logging
 from datetime import datetime, timezone
 from typing import Dict, Any, List, Tuple, Optional
 from app.graph.state import InvestigationState, VerificationEvaluation
-from app.agents.llm import call_groq_json, get_groq_client
+from app.agents.llm import (
+    call_groq_json,
+    get_groq_client,
+    is_rate_limited,
+    get_rate_limit_reason,
+    LLMRateLimitError,
+)
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -105,6 +111,21 @@ def run_verification_agent(state: InvestigationState) -> InvestigationState:
                 "suggested_time_window": eval_dict.get("suggested_time_window"),
                 "explanation": eval_dict.get("explanation", "Semantic verification completed.")
             }
+        except LLMRateLimitError as rle:
+            logger.warning(f"Layer 2 semantic verification skipped due to rate limit: {rle}.")
+            v_result = {
+                "verified": False,
+                "confidence_acceptable": False,
+                "evidence_sufficient": True,
+                "contradictions_found": False,
+                "challenge_category": "VERIFICATION_UNAVAILABLE",
+                "missing_evidence_types": [],
+                "weak_evidence_types": [],
+                "requested_agent_types": [],
+                "alternative_hypotheses": [],
+                "suggested_time_window": None,
+                "explanation": f"Layer 2 unavailable due to rate limit ({get_rate_limit_reason() or rle}); deterministic Layer 1 passed but semantic verification could not be completed."
+            }
         except Exception as e:
             logger.warning(f"Layer 2 semantic verification call failed: {e}.")
             # CRITICAL: If Layer 2 fails or is unavailable, NEVER default to verified=True!
@@ -122,7 +143,8 @@ def run_verification_agent(state: InvestigationState) -> InvestigationState:
                 "explanation": "Layer 2 unavailable; deterministic Layer 1 passed but semantic verification could not be completed."
             }
     else:
-        # Client is not configured/available: Record explicit VERIFICATION_UNAVAILABLE
+        # Client is not configured/available or rate-limited: Record explicit VERIFICATION_UNAVAILABLE
+        rate_note = f" due to rate limit ({get_rate_limit_reason()})" if is_rate_limited() else ""
         v_result = {
             "verified": False,
             "confidence_acceptable": False,
@@ -134,7 +156,7 @@ def run_verification_agent(state: InvestigationState) -> InvestigationState:
             "requested_agent_types": [],
             "alternative_hypotheses": [],
             "suggested_time_window": None,
-            "explanation": "Layer 2 unavailable; deterministic Layer 1 passed but semantic verification could not be completed."
+            "explanation": f"Layer 2 unavailable{rate_note}; deterministic Layer 1 passed but semantic verification could not be completed."
         }
 
     return _handle_verification_outcome(state, v_result, iteration)
@@ -280,7 +302,7 @@ def _handle_verification_outcome(
     }
 
     if not verified:
-        if iteration < max_iters and category != "VERIFICATION_UNAVAILABLE":
+        if iteration < max_iters and category != "VERIFICATION_UNAVAILABLE" and not is_rate_limited():
             # Increment iteration and trigger adaptive re-investigation loop
             state["iteration_count"] = iteration + 1
             state["investigation_status"] = "CHALLENGED"

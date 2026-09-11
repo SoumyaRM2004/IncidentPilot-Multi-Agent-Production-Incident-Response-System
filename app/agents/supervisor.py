@@ -1,7 +1,16 @@
+import logging
 from datetime import datetime, timezone
 from typing import Dict, Any, List
 from app.graph.state import InvestigationState, InvestigationPlanModel, ALLOWED_AGENTS
-from app.agents.llm import call_groq_json, get_groq_client
+from app.agents.llm import (
+    call_groq_json,
+    get_groq_client,
+    is_rate_limited,
+    get_rate_limit_reason,
+    LLMRateLimitError
+)
+
+logger = logging.getLogger(__name__)
 
 
 def run_supervisor_agent(state: InvestigationState) -> InvestigationState:
@@ -97,7 +106,16 @@ def run_supervisor_agent(state: InvestigationState) -> InvestigationState:
                     "You are the Lead SRE Investigation Supervisor in IncidentPilot.\n"
                     "Analyze the incident symptoms and produce a focused investigation plan.\n"
                     "Select specialist agents strictly from: ['logs', 'deployments', 'metrics', 'runbook'].\n"
-                    "Output valid JSON matching the schema."
+                    "Output a JSON object matching this schema:\n"
+                    "{\n"
+                    '  "focus": "Primary diagnostic focus",\n'
+                    '  "strategy": "Diagnostic strategy and objective",\n'
+                    '  "required_agents": ["logs", "metrics"],\n'
+                    '  "log_query": null,\n'
+                    '  "metric_names": null,\n'
+                    '  "window_minutes": 60\n'
+                    "}\n"
+                    "Do NOT nest the response inside an outer wrapper key."
                 )
                 user_prompt = (
                     f"Incident Title: {title}\n"
@@ -105,7 +123,11 @@ def run_supervisor_agent(state: InvestigationState) -> InvestigationState:
                     f"Description: {description}"
                 )
                 plan_dict = call_groq_json(system_prompt, user_prompt, schema_model=InvestigationPlanModel)
-            except Exception:
+            except LLMRateLimitError as rle:
+                logger.warning(f"Supervisor planning skipped due to LLM rate limit: {rle}. Using conservative fallback.")
+                plan_dict = None
+            except Exception as e:
+                logger.warning(f"Supervisor LLM planning failed: {e}. Using conservative fallback.")
                 plan_dict = None
 
         if not plan_dict:
@@ -119,7 +141,8 @@ def run_supervisor_agent(state: InvestigationState) -> InvestigationState:
             plan["required_agents"] = ["logs", "metrics", "runbook"]
 
         history_entry["action"] = "Formulated initial multi-agent investigation plan"
-        history_entry["findings"] = f"Strategy: {plan['strategy']}. Delegating to: {', '.join(plan['required_agents'])}."
+        rate_note = f" [LLM rate-limited: {get_rate_limit_reason()}]" if is_rate_limited() else ""
+        history_entry["findings"] = f"Strategy: {plan['strategy']}. Delegating to: {', '.join(plan['required_agents'])}.{rate_note}"
 
     state["investigation_plan"] = plan
     state["current_agent"] = "supervisor"
