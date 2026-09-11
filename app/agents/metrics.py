@@ -20,12 +20,16 @@ def run_metrics_agent(state: InvestigationState) -> InvestigationState:
     metric_names = plan.get("metric_names")
     new_evidence = []
 
+    incident = state.get("incident", {})
+    end_time = incident.get("reported_at") or incident.get("created_at")
+
     if metric_names:
         for m_name in metric_names:
             m_records = get_service_metrics(
                 service=service,
                 metric_name=m_name,
                 window_minutes=window_minutes,
+                end_time=end_time,
                 limit=5
             )
             for m in m_records:
@@ -35,6 +39,7 @@ def run_metrics_agent(state: InvestigationState) -> InvestigationState:
         all_metrics = get_service_metrics(
             service=service,
             window_minutes=window_minutes,
+            end_time=end_time,
             limit=10
         )
         for m in all_metrics:
