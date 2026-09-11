@@ -78,13 +78,24 @@ def run_root_cause_agent(state: InvestigationState) -> InvestigationState:
         is_inconclusive=is_inconclusive
     )
 
+    rec_raw = analysis_dict.get("recommended_action", {})
+    recommended_action = {
+        "action": rec_raw.get("action", f"Conduct manual investigation of {service}"),
+        "target_service": rec_raw.get("target_service", service),
+        "human_approval_required": True,
+        "approval_status": "PENDING_APPROVAL",
+        "estimated_risk": rec_raw.get("estimated_risk", "LOW"),
+        "rationale": rec_raw.get("rationale", analysis_dict.get("reasoning_summary", "Manual triage required"))
+    }
+
     selected_hyp = {
         "selected_root_cause": analysis_dict.get("selected_root_cause", "Inconclusive diagnosis"),
         "confidence": confidence_assessment["score"],
         "supporting_evidence_ids": raw_supporting_ids,  # CANONICAL PRESERVED for Verification Layer 1
         "contradictory_evidence_ids": raw_contradictory_ids,
-        "reasoning_summary": analysis_dict.get("reasoning_summary", "Synthesized from telemetry findings."),
-        "confidence_rationale": confidence_assessment["factors"]
+        "reasoning_summary": analysis_dict.get("reasoning_summary", "Automated telemetry evaluation."),
+        "confidence_rationale": confidence_assessment["factors"],
+        "recommended_action": recommended_action
     }
 
     raw_hypotheses = analysis_dict.get("hypotheses", [])
@@ -99,15 +110,6 @@ def run_root_cause_agent(state: InvestigationState) -> InvestigationState:
             "rationale": h.get("rationale")
         })
 
-    rec_raw = analysis_dict.get("recommended_action", {})
-    recommended_action = {
-        "action": rec_raw.get("action", f"Conduct manual investigation of {service}"),
-        "target_service": rec_raw.get("target_service", service),
-        "human_approval_required": True,
-        "approval_status": "PENDING_APPROVAL",
-        "estimated_risk": rec_raw.get("estimated_risk", "LOW"),
-        "rationale": rec_raw.get("rationale", selected_hyp["reasoning_summary"])
-    }
 
     state["hypotheses"] = formatted_hypotheses
     state["selected_hypothesis"] = selected_hyp
@@ -194,19 +196,18 @@ def _assess_evidence_quality(
 
     # Empirical source diversity
     if len(empirical_domains) >= 2:
-        score += 0.25
+        score += 0.30
         factors.append(f"Corroborated across {len(empirical_domains)} independent empirical source domains: {sorted(list(empirical_domains))}.")
     elif len(empirical_domains) == 1:
         score = min(score, 0.40)
         factors.append(f"Restricted to single empirical domain ({list(empirical_domains)[0]}); lacks multi-source empirical corroboration.")
     else:
         score = min(score, 0.20)
-        factors.append("No empirical telemetry backing (only runbook or external references).")
+        factors.append("No empirical telemetry backing.")
 
-    # Runbook alignment (operational guidance only, not independent proof)
+    # Runbook alignment (operational guidance only, NOT empirical corroboration)
     if has_runbook:
-        score += 0.05
-        factors.append("Operational runbook provides documented procedure (operational guidance).")
+        factors.append("Operational guidance is aligned with the observed symptoms.")
 
     # Contradictions
     if contradictory_ids:
@@ -231,11 +232,10 @@ def _synthesize_from_evidence(
 ) -> Dict[str, Any]:
     """Conservative fallback when semantic Root Cause LLM inference is unavailable.
 
-    Summarizes observed telemetry and preserves evidence IDs, but produces an explicitly
-    inconclusive hypothesis rather than inventing an unsupported causal diagnosis.
+    Summarizes observed telemetry, but produces an explicitly inconclusive hypothesis
+    rather than inventing an unsupported causal diagnosis.
     """
     service = incident.get("service", "service")
-    collected_ids = [e["evidence_id"] for e in evidence_list]
 
     # Summarize observed telemetry without fabricating causal claims
     logs = [e for e in evidence_list if e.get("source_type") in ("log", "analytics")]
@@ -256,25 +256,24 @@ def _synthesize_from_evidence(
     signals_desc = ", ".join(telemetry_signals) if telemetry_signals else "no telemetry collected"
 
     reasoning = (
-        f"Telemetry was collected ({signals_desc}), but automated causal inference could not be completed "
-        f"because the semantic root-cause analysis component was unavailable. "
-        f"Manual investigation is required to establish causality."
+        f"Telemetry was collected ({signals_desc}), but automated causal inference was unavailable. "
+        "No causal root cause is asserted."
     )
 
     return {
         "selected_root_cause": "Inconclusive: automated causal inference unavailable",
         "confidence": 0.20,
-        "supporting_evidence_ids": collected_ids,
+        "supporting_evidence_ids": [],
         "contradictory_evidence_ids": [],
         "reasoning_summary": reasoning,
         "hypotheses": [
             {
-                "id": "HYP-INCONCLUSIVE",
-                "title": "Inconclusive: automated causal inference unavailable",
+                "id": "HYP-1",
+                "title": "Inconclusive diagnosis",
                 "confidence": 0.20,
-                "supporting_evidence_ids": collected_ids,
+                "supporting_evidence_ids": [],
                 "contradictory_evidence_ids": [],
-                "rationale": reasoning
+                "rationale": "Causal inference could not be completed."
             }
         ],
         "recommended_action": {
@@ -283,6 +282,6 @@ def _synthesize_from_evidence(
             "human_approval_required": True,
             "approval_status": "PENDING_APPROVAL",
             "estimated_risk": "LOW",
-            "rationale": "Automated causal diagnosis is inconclusive; requires human operator triage."
+            "rationale": "Automated causal inference is unavailable."
         }
     }
