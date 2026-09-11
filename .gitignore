@@ -1,0 +1,32 @@
+# Python virtual environments
+.venv/
+venv/
+ENV/
+
+# Environment variables
+.env
+
+# Python bytecode & cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Testing & coverage
+.coverage
+htmlcov/
+
+# Local databases & storage
+*.db
+*.sqlite3
+data/qdrant/
+incidentpilot.db
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+
+# OS generated
+Thumbs.db
+[Dd]esktop.ini
