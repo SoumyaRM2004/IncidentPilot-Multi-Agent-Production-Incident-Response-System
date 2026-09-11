@@ -4,7 +4,7 @@
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.110.0-009688.svg)](https://fastapi.tiangolo.com/)
 [![LangGraph](https://img.shields.io/badge/LangGraph-0.0.30-orange.svg)](https://github.com/langchain-ai/langgraph)
 [![Qdrant](https://img.shields.io/badge/Qdrant-Vector%20DB-red.svg)](https://qdrant.tech/)
-[![Tests](https://img.shields.io/badge/Tests-46%20passed-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/Tests-47%20passed-brightgreen.svg)](tests/)
 
 IncidentPilot is an evidence-grounded multi-agent incident response system designed to investigate simulated production incidents. Built with **Python 3.11, LangGraph, Groq LLM, Qdrant, SQLAlchemy, FastAPI, and Streamlit**, IncidentPilot coordinates specialized investigation agents across logs, metrics, deployment changes, and operational runbooks to formulate, challenge, and verify evidence-backed root cause diagnoses and recommend human-gated remediation actions.
 
@@ -378,21 +378,21 @@ Execution Mode: DETERMINISTIC SIMULATED SEMANTIC VERIFIER
 =====================================================================================
 ID        | Category        | Service            | RC   | Evidence | Verif | Iters | Score
 -------------------------------------------------------------------------------------
-INC-001   | standard        | payment-service    | PASS | 3/3      | PASS  | 0     | 83%  
-INC-002   | standard        | order-service      | PASS | 4/4      | PASS  | 0     | 83%  
-INC-003   | standard        | auth-service       | PASS | 3/3      | PASS  | 0     | 83%  
-INC-004   | standard        | notification-service | PASS | 3/3      | PASS  | 0     | 83%  
-INC-005   | standard        | user-service       | PASS | 3/3      | PASS  | 0     | 83%  
-INC-006   | paraphrased     | payment-service    | PASS | 3/3      | PASS  | 0     | 83%  
-INC-007   | paraphrased     | order-service      | PASS | 4/4      | PASS  | 0     | 83%  
-INC-008   | noisy           | auth-service       | PASS | 3/3      | PASS  | 0     | 83%  
+INC-001   | standard        | payment-service    | PASS | 3/3      | PASS  | 0     | 80%  
+INC-002   | standard        | order-service      | PASS | 3/3      | PASS  | 0     | 80%  
+INC-003   | standard        | auth-service       | PASS | 3/3      | PASS  | 0     | 80%  
+INC-004   | standard        | notification-service | PASS | 3/3      | PASS  | 0     | 80%  
+INC-005   | standard        | user-service       | PASS | 3/3      | PASS  | 0     | 80%  
+INC-006   | paraphrased     | payment-service    | PASS | 3/3      | PASS  | 0     | 80%  
+INC-007   | paraphrased     | order-service      | PASS | 3/3      | PASS  | 0     | 80%  
+INC-008   | noisy           | auth-service       | PASS | 3/3      | PASS  | 0     | 80%  
 INC-009   | insufficient_telemetry | analytics-service  | PASS | 0/0      | PASS  | 2     | 20%  
 INC-010   | contradictory   | ghost-nonexistent-service | PASS | 0/0      | PASS  | 2     | 20%  
 =====================================================================================
 KEY METRICS:
 1. Root Cause Accuracy:         100.0% (10/10)
-2. Evidence Grounding Rate:       100.0% (26/26 citations grounded in telemetry)
-3. Hallucination Rate:           0.0% (0/26 fabricated citations)
+2. Evidence Grounding Rate:       100.0% (24/24 citations grounded in telemetry)
+3. Hallucination Rate:           0.0% (0/24 fabricated citations)
 4. Empirical Source Diversity:   100.0% (8/8 verified cases with >= 2 empirical sources)
 5. Verification Accuracy:        100.0% (10/10 correctly judged)
 6. Avg Iterations to Converge:   0.40
@@ -402,12 +402,12 @@ ALL EVALUATION BENCHMARKS PASSED SUCCESSFULLY.
 
 ### Pytest Verification Suite:
 ```
-============================== 46 passed in 2.37s ==============================
+============================== 47 passed in 2.29s ==============================
 - Supervisor allowlist validation, conservative fallback & plan control: 4 tests
 - Dynamic routing & unselected node skipping: 6 tests
 - Telemetry tool window & query parameter filtering: 8 tests
 - Hallucinated citation preservation & detection: 3 tests
-- Source diversity (empirical domains vs runbook, log+analytics): 4 tests
+- Source diversity (empirical domains vs runbook, log+analytics): 5 tests
 - Conservative root-cause fallback & inconclusive handling: 2 tests
 - Two-layer verification & Layer 2 unavailability: 4 tests
 - Database models & schema migrations: 4 tests

@@ -137,16 +137,21 @@ def _create_initial_plan(service: str, title: str, description: str) -> Dict[str
     text = f"{title} {description}".lower()
     selected_agents = ["logs", "metrics", "runbook"]
 
-    # Include deployments only if explicit release/deployment signals exist
-    if "deploy" in text or "release" in text:
+    # Deployment analysis is added only when explicit release/deployment context is present
+    deployment_signals = [
+        "deployment", "deployed", "release", "released",
+        "rollout", "rolled out", "version", "commit"
+    ]
+    if any(sig in text for sig in deployment_signals):
         selected_agents.append("deployments")
 
     return {
         "focus": f"Investigate service anomalies and degradation on {service}",
         "required_agents": selected_agents,
         "strategy": (
-            "When the planning LLM is unavailable, IncidentPilot uses a conservative deterministic fallback plan "
-            f"querying logs, metrics, and operational runbooks for {service}."
+            "When the planning LLM is unavailable, IncidentPilot uses a conservative fallback plan "
+            "prioritizing logs, metrics, and operational runbook guidance; deployment analysis is "
+            "added only when explicit release/deployment context is present."
         ),
         "window_minutes": 60
     }

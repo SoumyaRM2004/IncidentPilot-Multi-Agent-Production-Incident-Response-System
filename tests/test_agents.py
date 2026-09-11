@@ -301,16 +301,52 @@ def test_root_cause_llm_unavailable_conservative_fallback():
         state = run_root_cause_agent(state)
 
     selected = state["selected_hypothesis"]
-    assert "inconclusive" in selected["selected_root_cause"].lower()
+    assert selected["selected_root_cause"] == "Inconclusive: automated causal inference unavailable"
     assert selected["confidence"] <= 0.30
-    assert "LOG-1" in selected["supporting_evidence_ids"]
-    assert "METRIC-1" in selected["supporting_evidence_ids"]
+    assert selected["supporting_evidence_ids"] == []
+    assert "sanitized_supporting_evidence_ids" not in selected
     assert "payment-service degradation:" not in selected["selected_root_cause"]
+    assert selected["recommended_action"]["estimated_risk"] == "LOW"
+    assert "escalate" in selected["recommended_action"]["action"].lower()
 
     # Verification must run on the fallback and refuse to mark it verified
     v_state = run_verification_agent(state)
     assert v_state["verification_result"]["verified"] is False
     assert v_state["verification_result"]["challenge_category"] == "INSUFFICIENT_EVIDENCE"
+
+
+def test_supervisor_fallback_conservative_signals():
+    """Supervisor fallback must default to logs, metrics, runbook; crash/outage/spike alone must not trigger deployments."""
+    # Scenario with symptom keywords alone
+    symptom_incident = {
+        "id": "INC-SYMPTOM",
+        "service": "order-service",
+        "title": "Severe latency spike and crash outage",
+        "description": "System encountered high error spike resulting in outage and service crash."
+    }
+    state = create_initial_state(symptom_incident)
+    with patch("app.agents.supervisor.get_groq_client", return_value=None):
+        state = run_supervisor_agent(state)
+
+    plan = state["investigation_plan"]
+    assert "logs" in plan["required_agents"]
+    assert "metrics" in plan["required_agents"]
+    assert "runbook" in plan["required_agents"]
+    assert "deployments" not in plan["required_agents"], "Symptom words ('crash', 'outage', 'spike') must NOT trigger deployment agent!"
+
+    # Scenario with explicit deployment/release signal
+    release_incident = {
+        "id": "INC-RELEASE",
+        "service": "order-service",
+        "title": "Checkout failure following release v2.4.1",
+        "description": "Errors observed immediately after deployment rollout commit."
+    }
+    rel_state = create_initial_state(release_incident)
+    with patch("app.agents.supervisor.get_groq_client", return_value=None):
+        rel_state = run_supervisor_agent(rel_state)
+
+    rel_plan = rel_state["investigation_plan"]
+    assert "deployments" in rel_plan["required_agents"]
 
 
 def test_frontend_execution_trace_derivation():
@@ -336,4 +372,5 @@ def test_frontend_execution_trace_derivation():
     assert "verification" in executed_keys
     assert "deployments" not in executed_keys
     assert "runbook" not in executed_keys
+
 
