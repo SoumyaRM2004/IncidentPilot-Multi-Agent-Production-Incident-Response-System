@@ -374,3 +374,57 @@ def test_frontend_execution_trace_derivation():
     assert "runbook" not in executed_keys
 
 
+def test_adversarial_causality_valid_evidence_rejected_by_layer2():
+    """Adversarial test: Valid multi-domain evidence (passes Layer 1) but flawed causal hypothesis.
+
+    Layer 2 semantic challenge MUST reject it. Proves valid citations + 2 sources != verified.
+    """
+    state = create_initial_state({
+        "id": "INC-ADV-CAUSAL",
+        "service": "payment-service",
+        "title": "Payment DB timeout during unrelated notification deployment",
+        "description": "Database pool exhaustion occurred concurrently with a routine notification rollout."
+    })
+
+    # Supporting evidence IDs are all real and span 3 independent empirical domains (log, metric, deployment)
+    state["collected_evidence"] = [
+        {"evidence_id": "LOG-101", "source_type": "log", "source": "application_logs", "finding": "DB connection timeout on pool size 20", "service": "payment-service"},
+        {"evidence_id": "METRIC-101", "source_type": "metric", "source": "service_metrics", "finding": "db_connection_pool_utilization = 98%", "service": "payment-service"},
+        {"evidence_id": "DEP-401", "source_type": "deployment", "source": "deployment_records", "finding": "notification-service v1.3.0 deployed", "service": "notification-service"}
+    ]
+
+    # Hypothesis claims the notification deployment caused the payment database lockup
+    state["selected_hypothesis"] = {
+        "selected_root_cause": "Notification service deployment v1.3.0 caused payment DB pool exhaustion",
+        "confidence": 0.85,
+        "supporting_evidence_ids": ["LOG-101", "METRIC-101", "DEP-401"],
+        "contradictory_evidence_ids": [],
+        "reasoning_summary": "Notification deployment coincided with payment database connection acquisition timeouts."
+    }
+
+    # Verify Layer 1 passes deterministically because all IDs exist and span 3 independent domains
+    l1_passed, _, _, _, _ = _deterministic_audit(state["selected_hypothesis"], state["collected_evidence"])
+    assert l1_passed is True, "Layer 1 must pass: evidence IDs exist and span 3 independent empirical domains."
+
+    # Layer 2 semantic verifier audits causal mechanism and finds notification deployment has no causal link to payment DB
+    mock_layer2_rejection = {
+        "verified": False,
+        "confidence_acceptable": False,
+        "evidence_sufficient": True,
+        "contradictions_found": False,
+        "challenge_category": "SEMANTIC_CHALLENGE",
+        "missing_evidence_types": [],
+        "requested_agent_types": [],
+        "explanation": "Correlation without causation: notification-service deployment does not share database infrastructure with payment-service. Causal mechanism rejected."
+    }
+
+    with patch("app.agents.verification.get_groq_client", return_value=True):
+        with patch("app.agents.verification.call_groq_json", return_value=mock_layer2_rejection):
+            state = run_verification_agent(state)
+
+    # Invariant: Layer 1 pass does NOT guarantee verification; Layer 2 semantic challenge takes precedence
+    assert state["verification_result"]["verified"] is False
+    assert state["verification_result"]["challenge_category"] == "SEMANTIC_CHALLENGE"
+    assert "Correlation without causation" in state["verification_result"]["explanation"]
+
+

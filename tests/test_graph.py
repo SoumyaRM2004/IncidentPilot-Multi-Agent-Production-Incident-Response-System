@@ -94,3 +94,24 @@ def test_route_after_verification_max_iteration_stop():
 
     next_node = route_after_verification(state)
     assert next_node == "__end__"
+
+
+def test_workflow_enforces_strict_max_iteration_budget(db_session):
+    """Workflow must terminate at max_iterations without exceeding iteration budget."""
+    empty_incident = {
+        "id": "INC-ITER-BOUND",
+        "service": "ghost-service",
+        "title": "Unprovable anomaly",
+        "description": "No telemetry available."
+    }
+    with patch("app.agents.supervisor.get_groq_client", return_value=None), \
+         patch("app.agents.root_cause.get_groq_client", return_value=None), \
+         patch("app.agents.verification.get_groq_client", return_value=None):
+        graph = create_investigation_graph()
+        initial_state = create_initial_state(incident=empty_incident, max_iterations=2)
+        final_state = graph.invoke(initial_state)
+
+    # Invariant: Must terminate at exactly iteration 2 with INSUFFICIENT_EVIDENCE
+    assert final_state["iteration_count"] == 2
+    assert final_state["investigation_status"] == "INSUFFICIENT_EVIDENCE"
+    assert final_state["verification_result"]["verified"] is False
