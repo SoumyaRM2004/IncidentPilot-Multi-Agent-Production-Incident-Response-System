@@ -50,7 +50,9 @@ def run_metrics_agent(state: InvestigationState) -> InvestigationState:
     )
 
     state["agent_history"].append({
+        "agent_key": "metrics",
         "agent": "Metrics Investigation Agent",
+        "status": "EXECUTED",
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "iteration": iteration,
         "action": f"Executed get_service_metrics for {service} (targets: {metric_names or 'all'}, window: {window_minutes}m)",

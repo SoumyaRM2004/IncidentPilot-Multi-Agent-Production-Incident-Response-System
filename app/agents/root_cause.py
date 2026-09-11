@@ -68,21 +68,20 @@ def run_root_cause_agent(state: InvestigationState) -> InvestigationState:
     raw_supporting_ids = analysis_dict.get("supporting_evidence_ids", [])
     raw_contradictory_ids = analysis_dict.get("contradictory_evidence_ids", [])
 
-    valid_ids = {e["evidence_id"] for e in evidence_list}
-    sanitized_supporting_ids = [eid for eid in raw_supporting_ids if eid in valid_ids]
+    is_inconclusive = "inconclusive" in analysis_dict.get("selected_root_cause", "").lower()
 
     # Compute explicit, explainable evidence quality score and rationale factors
     confidence_assessment = _assess_evidence_quality(
         supporting_ids=raw_supporting_ids,
         contradictory_ids=raw_contradictory_ids,
-        evidence_list=evidence_list
+        evidence_list=evidence_list,
+        is_inconclusive=is_inconclusive
     )
 
     selected_hyp = {
         "selected_root_cause": analysis_dict.get("selected_root_cause", "Inconclusive diagnosis"),
         "confidence": confidence_assessment["score"],
-        "supporting_evidence_ids": raw_supporting_ids,  # PRESERVED for Verification Layer 1
-        "sanitized_supporting_evidence_ids": sanitized_supporting_ids,
+        "supporting_evidence_ids": raw_supporting_ids,  # CANONICAL PRESERVED for Verification Layer 1
         "contradictory_evidence_ids": raw_contradictory_ids,
         "reasoning_summary": analysis_dict.get("reasoning_summary", "Synthesized from telemetry findings."),
         "confidence_rationale": confidence_assessment["factors"]
@@ -118,7 +117,9 @@ def run_root_cause_agent(state: InvestigationState) -> InvestigationState:
     state["current_agent"] = "root_cause"
 
     state["agent_history"].append({
+        "agent_key": "root_cause",
         "agent": "Root Cause Analyst Agent",
+        "status": "EXECUTED",
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "iteration": iteration,
         "action": "Evaluated evidence catalog and synthesized causal hypothesis",
@@ -132,14 +133,26 @@ def run_root_cause_agent(state: InvestigationState) -> InvestigationState:
 def _assess_evidence_quality(
     supporting_ids: List[str],
     contradictory_ids: List[str],
-    evidence_list: List[Dict[str, Any]]
+    evidence_list: List[Dict[str, Any]],
+    is_inconclusive: bool = False
 ) -> Dict[str, Any]:
-    """Computes an explainable evidence quality score and rationale factors.
+    """Computes a heuristic, explainable evidence quality score and rationale factors.
 
-    Evaluates: item count, independent empirical source diversity, runbook guidance, and contradictions.
+    Evaluates: item count, independent empirical source diversity, operational runbook guidance, and contradictions.
+    This is a heuristic indicator of evidence completeness and corroboration, NOT a calibrated statistical probability.
     """
     factors = []
     evidence_map = {e["evidence_id"]: e for e in evidence_list}
+
+    # If the hypothesis is explicitly inconclusive
+    if is_inconclusive:
+        factors.append("Automated causal inference is inconclusive; score reflects conservative unverified baseline.")
+        factors.append(f"{len(supporting_ids)} telemetry items referenced as observational context.")
+        return {
+            "score": 0.20,
+            "level": "LOW",
+            "factors": factors
+        }
 
     # Detect if any cited IDs are fabricated
     fabricated = [eid for eid in supporting_ids if eid not in evidence_map]
@@ -160,27 +173,40 @@ def _assess_evidence_quality(
         }
 
     supporting_items = [evidence_map[eid] for eid in supporting_ids if eid in evidence_map]
-    empirical_sources = {item.get("source_type") for item in supporting_items if item.get("source_type") in ("log", "metric", "deployment", "analytics")}
+
+    # Map supporting items to independent empirical domains:
+    # 'log' and 'analytics' map to the single empirical domain 'log'
+    empirical_domains = set()
+    for item in supporting_items:
+        st = item.get("source_type")
+        if st in ("log", "analytics"):
+            empirical_domains.add("log")
+        elif st == "metric":
+            empirical_domains.add("metric")
+        elif st == "deployment":
+            empirical_domains.add("deployment")
+        # 'runbook' is operational context and does NOT count as an empirical domain
+
     has_runbook = any(item.get("source_type") == "runbook" for item in supporting_items)
 
     score = 0.50
     factors.append(f"{len(supporting_ids)} supporting evidence items cited.")
 
     # Empirical source diversity
-    if len(empirical_sources) >= 2:
+    if len(empirical_domains) >= 2:
         score += 0.25
-        factors.append(f"Corroborated across {len(empirical_sources)} independent empirical source types: {sorted(list(empirical_sources))}.")
-    elif len(empirical_sources) == 1:
-        score = min(score, 0.60)
-        factors.append(f"Restricted to single empirical source type ({list(empirical_sources)[0]}); lacks multi-source corroboration.")
+        factors.append(f"Corroborated across {len(empirical_domains)} independent empirical source domains: {sorted(list(empirical_domains))}.")
+    elif len(empirical_domains) == 1:
+        score = min(score, 0.40)
+        factors.append(f"Restricted to single empirical domain ({list(empirical_domains)[0]}); lacks multi-source empirical corroboration.")
     else:
-        score = min(score, 0.30)
+        score = min(score, 0.20)
         factors.append("No empirical telemetry backing (only runbook or external references).")
 
-    # Runbook alignment (guidance only, not independent proof)
+    # Runbook alignment (operational guidance only, not independent proof)
     if has_runbook:
-        score += 0.08
-        factors.append("Operational runbook provides documented remediation procedure.")
+        score += 0.05
+        factors.append("Operational runbook provides documented procedure (operational guidance).")
 
     # Contradictions
     if contradictory_ids:
@@ -203,123 +229,60 @@ def _synthesize_from_evidence(
     incident: Dict[str, Any],
     evidence_list: List[Dict[str, Any]]
 ) -> Dict[str, Any]:
-    """Generic evidence-driven causal synthesis without benchmark-specific keywords or scenario lookup tables."""
+    """Conservative fallback when semantic Root Cause LLM inference is unavailable.
+
+    Summarizes observed telemetry and preserves evidence IDs, but produces an explicitly
+    inconclusive hypothesis rather than inventing an unsupported causal diagnosis.
+    """
     service = incident.get("service", "service")
+    collected_ids = [e["evidence_id"] for e in evidence_list]
 
-    # If insufficient evidence is collected
-    if len(evidence_list) < 2:
-        return {
-            "selected_root_cause": f"Inconclusive telemetry for {service}",
-            "confidence": 0.25,
-            "supporting_evidence_ids": [e["evidence_id"] for e in evidence_list],
-            "contradictory_evidence_ids": [],
-            "reasoning_summary": f"Insufficient telemetry collected ({len(evidence_list)} items). Unable to establish causal mechanism.",
-            "hypotheses": [
-                {
-                    "id": "HYP-1",
-                    "title": f"Inconclusive telemetry for {service}",
-                    "confidence": 0.25,
-                    "supporting_evidence_ids": [e["evidence_id"] for e in evidence_list],
-                    "contradictory_evidence_ids": [],
-                    "rationale": "Evidence count is below minimum threshold."
-                }
-            ],
-            "recommended_action": {
-                "action": f"Escalate {service} incident to on-call engineer for manual telemetry triage",
-                "target_service": service,
-                "estimated_risk": "LOW",
-                "rationale": "Automated diagnosis cannot proceed without sufficient telemetry."
-            }
-        }
-
-    # Group evidence by source type
+    # Summarize observed telemetry without fabricating causal claims
     logs = [e for e in evidence_list if e.get("source_type") in ("log", "analytics")]
     metrics = [e for e in evidence_list if e.get("source_type") == "metric"]
     deployments = [e for e in evidence_list if e.get("source_type") == "deployment"]
     runbooks = [e for e in evidence_list if e.get("source_type") == "runbook"]
 
-    # If zero empirical telemetry was found (only runbook or nothing)
-    if not logs and not metrics and not deployments:
-        return {
-            "selected_root_cause": f"Inconclusive: No empirical telemetry for {service}",
-            "confidence": 0.20,
-            "supporting_evidence_ids": [],
-            "contradictory_evidence_ids": [],
-            "reasoning_summary": f"No empirical telemetry (logs, metrics, deployments) exists for {service}.",
-            "hypotheses": [
-                {
-                    "id": "HYP-1",
-                    "title": f"Inconclusive telemetry for {service}",
-                    "confidence": 0.20,
-                    "supporting_evidence_ids": [],
-                    "contradictory_evidence_ids": [],
-                    "rationale": "Zero telemetry available."
-                }
-            ],
-            "recommended_action": {
-                "action": f"Escalate {service} incident to on-call engineer for manual telemetry triage",
-                "target_service": service,
-                "estimated_risk": "LOW",
-                "rationale": "Zero telemetry available."
-            }
-        }
-
-    supporting_ids = []
-    reasoning_parts = []
-
-    # Pick representative supporting evidence from available categories
+    telemetry_signals = []
     if logs:
-        primary_log = logs[0]
-        supporting_ids.append(primary_log["evidence_id"])
-        reasoning_parts.append(f"Log analysis: {primary_log['finding']}")
-
+        telemetry_signals.append(f"{len(logs)} log events")
     if metrics:
-        primary_metric = metrics[0]
-        supporting_ids.append(primary_metric["evidence_id"])
-        reasoning_parts.append(f"Telemetry metric: {primary_metric['finding']}")
-
+        telemetry_signals.append(f"{len(metrics)} metric samples")
     if deployments:
-        primary_dep = deployments[0]
-        supporting_ids.append(primary_dep["evidence_id"])
-        reasoning_parts.append(f"Release correlation: {primary_dep['finding']}")
-
+        telemetry_signals.append(f"{len(deployments)} deployment records")
     if runbooks:
-        primary_runbook = runbooks[0]
-        supporting_ids.append(primary_runbook["evidence_id"])
-        reasoning_parts.append(f"Runbook guidance: {primary_runbook['finding']}")
+        telemetry_signals.append(f"{len(runbooks)} runbook references")
 
-    # Formulate root cause title directly from observed evidence findings
-    lead_finding = logs[0]["finding"] if logs else (metrics[0]["finding"] if metrics else incident.get("title", ""))
-    root_cause_title = f"{service} degradation: {lead_finding}"
+    signals_desc = ", ".join(telemetry_signals) if telemetry_signals else "no telemetry collected"
+
+    reasoning = (
+        f"Telemetry was collected ({signals_desc}), but automated causal inference could not be completed "
+        f"because the semantic root-cause analysis component was unavailable. "
+        f"Manual investigation is required to establish causality."
+    )
 
     return {
-        "selected_root_cause": root_cause_title,
-        "confidence": 0.85 if len(supporting_ids) >= 3 else 0.60,
-        "supporting_evidence_ids": supporting_ids,
+        "selected_root_cause": "Inconclusive: automated causal inference unavailable",
+        "confidence": 0.20,
+        "supporting_evidence_ids": collected_ids,
         "contradictory_evidence_ids": [],
-        "reasoning_summary": " | ".join(reasoning_parts),
+        "reasoning_summary": reasoning,
         "hypotheses": [
             {
-                "id": "HYP-1",
-                "title": root_cause_title,
-                "confidence": 0.85 if len(supporting_ids) >= 3 else 0.60,
-                "supporting_evidence_ids": supporting_ids,
+                "id": "HYP-INCONCLUSIVE",
+                "title": "Inconclusive: automated causal inference unavailable",
+                "confidence": 0.20,
+                "supporting_evidence_ids": collected_ids,
                 "contradictory_evidence_ids": [],
-                "rationale": "Corroborated by observed telemetry and runbook guidance."
-            },
-            {
-                "id": "HYP-2",
-                "title": f"Transient network or infrastructure partition affecting {service}",
-                "confidence": 0.25,
-                "supporting_evidence_ids": [],
-                "contradictory_evidence_ids": [],
-                "rationale": "Alternative possibility without direct corroborating metric signals."
+                "rationale": reasoning
             }
         ],
         "recommended_action": {
-            "action": f"Apply operational runbook remediation and verify health of {service}",
+            "action": f"Escalate {service} incident to on-call engineer for manual telemetry triage",
             "target_service": service,
+            "human_approval_required": True,
+            "approval_status": "PENDING_APPROVAL",
             "estimated_risk": "LOW",
-            "rationale": "Directly targets observed degradation pattern."
+            "rationale": "Automated causal diagnosis is inconclusive; requires human operator triage."
         }
     }

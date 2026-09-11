@@ -42,7 +42,9 @@ def run_runbook_agent(state: InvestigationState) -> InvestigationState:
     )
 
     state["agent_history"].append({
+        "agent_key": "runbook",
         "agent": "Runbook / RAG Agent",
+        "status": "EXECUTED",
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "iteration": iteration,
         "action": f"Executed Qdrant semantic search for runbooks matching {service} incident",

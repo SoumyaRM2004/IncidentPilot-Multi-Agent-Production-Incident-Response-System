@@ -249,3 +249,91 @@ def test_reinvestigation_consumes_structured_verification_feedback():
     plan = state["investigation_plan"]
     assert "deployments" in plan["required_agents"]
     assert plan["window_minutes"] == 180
+
+
+def test_runbook_does_not_count_as_empirical_proof():
+    """Runbook guidance is operational context and must NOT count as an empirical domain."""
+    selected_hyp = {
+        "selected_root_cause": "Hypothetical Cause",
+        "confidence": 0.65,
+        "supporting_evidence_ids": ["LOG-1", "RUNBOOK-1"],
+        "contradictory_evidence_ids": []
+    }
+    evidence_list = [
+        {"evidence_id": "LOG-1", "source_type": "log"},
+        {"evidence_id": "RUNBOOK-1", "source_type": "runbook"}
+    ]
+    passed, category, reason, missing, requested = _deterministic_audit(selected_hyp, evidence_list)
+    assert passed is False
+    assert category == "LOW_SOURCE_DIVERSITY"
+    assert "runbook guidance is operational context" in reason.lower()
+    assert "metric" in missing or "deployment" in missing
+
+
+def test_log_plus_analytics_is_not_two_independent_domains():
+    """Log-derived analytics and raw logs belong to the same empirical domain ('log') and fail diversity."""
+    selected_hyp = {
+        "selected_root_cause": "Hypothetical Cause",
+        "confidence": 0.65,
+        "supporting_evidence_ids": ["LOG-1", "FREQ-ANALYTICS-1"],
+        "contradictory_evidence_ids": []
+    }
+    evidence_list = [
+        {"evidence_id": "LOG-1", "source_type": "log"},
+        {"evidence_id": "FREQ-ANALYTICS-1", "source_type": "analytics"}
+    ]
+    passed, category, reason, missing, requested = _deterministic_audit(selected_hyp, evidence_list)
+    assert passed is False
+    assert category == "LOW_SOURCE_DIVERSITY"
+    assert "log-derived analytics does not constitute a separate empirical domain" in reason.lower()
+
+
+def test_root_cause_llm_unavailable_conservative_fallback():
+    """When Groq LLM is unavailable, Root Cause Agent must use conservative fallback without inventing causes."""
+    incident = {"id": "INC-TEST", "service": "payment-service", "title": "Database degradation", "description": "Timeouts"}
+    state = create_initial_state(incident)
+    state["collected_evidence"] = [
+        {"evidence_id": "LOG-1", "source_type": "log", "source": "logs", "finding": "DB connection timeout", "service": "payment-service"},
+        {"evidence_id": "METRIC-1", "source_type": "metric", "source": "metrics", "finding": "Pool saturation 99%", "service": "payment-service"}
+    ]
+
+    with patch("app.agents.root_cause.get_groq_client", return_value=None):
+        state = run_root_cause_agent(state)
+
+    selected = state["selected_hypothesis"]
+    assert "inconclusive" in selected["selected_root_cause"].lower()
+    assert selected["confidence"] <= 0.30
+    assert "LOG-1" in selected["supporting_evidence_ids"]
+    assert "METRIC-1" in selected["supporting_evidence_ids"]
+    assert "payment-service degradation:" not in selected["selected_root_cause"]
+
+    # Verification must run on the fallback and refuse to mark it verified
+    v_state = run_verification_agent(state)
+    assert v_state["verification_result"]["verified"] is False
+    assert v_state["verification_result"]["challenge_category"] == "INSUFFICIENT_EVIDENCE"
+
+
+def test_frontend_execution_trace_derivation():
+    """UI execution trace must derive EXECUTED and SKIPPED states from machine-readable history."""
+    sample_history = [
+        {"agent_key": "supervisor", "agent": "Supervisor Agent", "status": "EXECUTED"},
+        {"agent_key": "logs", "agent": "Log Investigation Agent", "status": "EXECUTED"},
+        {"agent_key": "metrics", "agent": "Metrics Investigation Agent", "status": "EXECUTED"},
+        {"agent_key": "root_cause", "agent": "Root Cause Analyst Agent", "status": "EXECUTED"},
+        {"agent_key": "verification", "agent": "Verification Agent", "status": "EXECUTED"}
+    ]
+
+    executed_keys = {
+        h.get("agent_key")
+        for h in sample_history
+        if h.get("agent_key") and h.get("status") == "EXECUTED"
+    }
+
+    assert "supervisor" in executed_keys
+    assert "logs" in executed_keys
+    assert "metrics" in executed_keys
+    assert "root_cause" in executed_keys
+    assert "verification" in executed_keys
+    assert "deployments" not in executed_keys
+    assert "runbook" not in executed_keys
+

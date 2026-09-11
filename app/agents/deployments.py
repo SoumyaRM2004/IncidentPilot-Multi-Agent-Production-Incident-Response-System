@@ -35,7 +35,9 @@ def run_deployment_agent(state: InvestigationState) -> InvestigationState:
     )
 
     state["agent_history"].append({
+        "agent_key": "deployments",
         "agent": "Deployment Investigation Agent",
+        "status": "EXECUTED",
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "iteration": iteration,
         "action": f"Executed get_recent_deployments for {service} (window: {window_minutes or 'all'}m)",
