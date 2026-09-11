@@ -22,7 +22,7 @@ def run_log_agent(state: InvestigationState) -> InvestigationState:
     # Deterministic log inspections
     error_freq = get_error_frequency(service=service, minutes=window_minutes)
     error_logs = search_logs(service=service, query=log_query, level="ERROR", window_minutes=window_minutes, limit=5)
-    service_logs = get_service_logs(service=service, limit=5) if not error_logs else []
+    service_logs = get_service_logs(service=service, window_minutes=window_minutes, limit=5) if not error_logs else []
 
     new_evidence = []
 

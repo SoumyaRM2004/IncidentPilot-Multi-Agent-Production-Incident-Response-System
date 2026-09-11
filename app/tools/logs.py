@@ -95,6 +95,10 @@ def get_error_frequency(service: str, minutes: int = 60) -> Dict[str, Any]:
         db.close()
 
 
-def get_service_logs(service: str, limit: int = 20) -> List[Dict[str, Any]]:
-    """Retrieve recent chronological logs for a specific service."""
-    return search_logs(service=service, limit=limit)
+def get_service_logs(
+    service: str,
+    window_minutes: Optional[int] = None,
+    limit: int = 20
+) -> List[Dict[str, Any]]:
+    """Retrieve recent chronological logs for a specific service within an optional time window."""
+    return search_logs(service=service, window_minutes=window_minutes, limit=limit)
