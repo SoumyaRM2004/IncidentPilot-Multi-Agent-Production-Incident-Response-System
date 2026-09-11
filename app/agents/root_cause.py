@@ -1,93 +1,110 @@
 import json
-from datetime import datetime
+import logging
+from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional
-from app.graph.state import InvestigationState
+from app.graph.state import InvestigationState, RootCauseOutput, HypothesisItem, RecommendedAction
 from app.agents.llm import call_groq_json, get_groq_client
+from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 def run_root_cause_agent(state: InvestigationState) -> InvestigationState:
-    """Root Cause Analyst Agent: Evaluates collected evidence, ranks hypotheses, and determines root cause."""
+    """Root Cause Analyst Agent: Evaluates collected evidence, formulates candidate hypotheses,
+
+    and performs evidence-grounded causal reasoning without benchmark hardcoding.
+    """
     incident = state["incident"]
     service = incident.get("service", "")
     evidence_list = state.get("collected_evidence", [])
     iteration = state.get("iteration_count", 0)
 
-    # Compile evidence catalog with IDs for LLM reasoning
+    # Compile structured evidence catalog with IDs for LLM reasoning
     evidence_catalog = [
         {
             "id": e["evidence_id"],
-            "source": e["source"],
-            "finding": e["finding"]
+            "source_type": e.get("source_type", "unknown"),
+            "source": e.get("source", "unknown"),
+            "timestamp": e.get("timestamp"),
+            "finding": e.get("finding")
         }
         for e in evidence_list
     ]
 
     client = get_groq_client()
-    analysis = None
+    analysis_dict = None
 
     if client and evidence_list:
         try:
             system_prompt = (
-                "You are the Principal Incident Response Root Cause Analyst. "
-                "Analyze the provided incident and evidence list. You MUST strictly adhere to the following rules:\n"
-                "1. Formulate 2-3 plausible hypotheses and rank them by confidence.\n"
-                "2. Select the single best supported hypothesis as selected_root_cause.\n"
-                "3. CRITICAL: supporting_evidence_ids MUST only contain IDs from the provided evidence list. DO NOT invent IDs.\n"
-                "4. Return JSON with this structure:\n"
-                "{\n"
-                '  "hypotheses": [{"id": "HYP-1", "title": "...", "confidence": 0.85, "supporting_evidence_ids": ["LOG-101"]}],\n'
-                '  "selected_root_cause": "...",\n'
-                '  "confidence": 0.88,\n'
-                '  "supporting_evidence_ids": ["LOG-101", "METRIC-1"],\n'
-                '  "contradictory_evidence_ids": [],\n'
-                '  "reasoning_summary": "...",\n'
-                '  "recommended_action": {"action": "...", "target_service": "...", "rationale": "..."}\n'
-                "}"
+                "You are the Principal Incident Response Root Cause Analyst in IncidentPilot.\n"
+                "Your objective is to evaluate empirical telemetry evidence and operational runbooks to identify the primary root cause.\n"
+                "STRICT REQUIREMENTS:\n"
+                "1. Formulate 2 to 3 distinct candidate hypotheses based on evidence.\n"
+                "2. supporting_evidence_ids MUST only contain IDs from the provided evidence catalog. DO NOT invent IDs.\n"
+                "3. If contradictory evidence exists, cite it in contradictory_evidence_ids.\n"
+                "4. Assign calibrated confidence based on evidence corroboration (0.0 to 1.0).\n"
+                "5. Propose a non-destructive remediation action with human approval required.\n"
+                "6. If evidence is insufficient, set selected_root_cause to 'Inconclusive: Insufficient Evidence' and confidence < 0.5."
             )
             user_prompt = (
-                f"Incident: {incident.get('title')} ({service})\n"
-                f"Description: {incident.get('description')}\n"
-                f"Evidence List: {json.dumps(evidence_catalog, indent=2)}"
+                f"Incident Context:\n"
+                f"Title: {incident.get('title')}\n"
+                f"Service: {service}\n"
+                f"Description: {incident.get('description')}\n\n"
+                f"Evidence Catalog ({len(evidence_catalog)} items):\n"
+                f"{json.dumps(evidence_catalog, indent=2)}"
             )
-            analysis = call_groq_json(system_prompt, user_prompt)
-        except Exception:
-            analysis = None
+            analysis_dict = call_groq_json(system_prompt, user_prompt, schema_model=RootCauseOutput)
+        except Exception as e:
+            logger.warning(f"Groq root-cause inference failed or schema invalid: {e}. Using evidence-driven synthesis.")
+            analysis_dict = None
 
-    if not analysis:
-        # Deterministic evidence synthesis
-        analysis = _deterministic_root_cause_analysis(incident, evidence_list)
+    if not analysis_dict:
+        # Generic, evidence-driven causal synthesis without benchmark-specific keywords
+        analysis_dict = _synthesize_from_evidence(incident, evidence_list)
 
-    # Filter supporting evidence IDs to guarantee no fabricated IDs exist
+    # Deterministic enforcement: Purge any non-existent evidence IDs to guarantee zero hallucination
     valid_ids = {e["evidence_id"] for e in evidence_list}
-    filtered_supporting_ids = [eid for eid in analysis.get("supporting_evidence_ids", []) if eid in valid_ids]
-    filtered_contradictory_ids = [eid for eid in analysis.get("contradictory_evidence_ids", []) if eid in valid_ids]
+    filtered_supporting_ids = [eid for eid in analysis_dict.get("supporting_evidence_ids", []) if eid in valid_ids]
+    filtered_contradictory_ids = [eid for eid in analysis_dict.get("contradictory_evidence_ids", []) if eid in valid_ids]
+
+    # Compute explainable confidence score
+    raw_confidence = float(analysis_dict.get("confidence", 0.5))
+    calibrated_confidence = _calibrate_confidence(
+        base_confidence=raw_confidence,
+        supporting_ids=filtered_supporting_ids,
+        contradictory_ids=filtered_contradictory_ids,
+        evidence_list=evidence_list
+    )
 
     selected_hyp = {
-        "selected_root_cause": analysis.get("selected_root_cause", "Unknown anomaly"),
-        "confidence": round(float(analysis.get("confidence", 0.5)), 2),
+        "selected_root_cause": analysis_dict.get("selected_root_cause", "Inconclusive diagnosis"),
+        "confidence": calibrated_confidence,
         "supporting_evidence_ids": filtered_supporting_ids,
         "contradictory_evidence_ids": filtered_contradictory_ids,
-        "reasoning_summary": analysis.get("reasoning_summary", "Synthesized from telemetry and log error patterns.")
+        "reasoning_summary": analysis_dict.get("reasoning_summary", "Synthesized from telemetry findings.")
     }
 
-    raw_hypotheses = analysis.get("hypotheses", [])
+    raw_hypotheses = analysis_dict.get("hypotheses", [])
     formatted_hypotheses = []
     for h in raw_hypotheses:
         formatted_hypotheses.append({
             "id": h.get("id", "HYP-1"),
             "title": h.get("title", ""),
-            "confidence": round(float(h.get("confidence", 0.5)), 2),
-            "supporting_evidence_ids": [eid for eid in h.get("supporting_evidence_ids", []) if eid in valid_ids]
+            "confidence": round(min(max(float(h.get("confidence", 0.5)), 0.0), 1.0), 2),
+            "supporting_evidence_ids": [eid for eid in h.get("supporting_evidence_ids", []) if eid in valid_ids],
+            "contradictory_evidence_ids": [eid for eid in h.get("contradictory_evidence_ids", []) if eid in valid_ids],
+            "rationale": h.get("rationale")
         })
 
-    # Prepare recommended action
-    rec_raw = analysis.get("recommended_action", {})
+    rec_raw = analysis_dict.get("recommended_action", {})
     recommended_action = {
-        "action": rec_raw.get("action", f"Triage and inspect {service}"),
+        "action": rec_raw.get("action", f"Conduct manual investigation of {service}"),
         "target_service": rec_raw.get("target_service", service),
         "human_approval_required": True,
         "approval_status": "PENDING_APPROVAL",
-        "estimated_risk": "LOW",
+        "estimated_risk": rec_raw.get("estimated_risk", "LOW"),
         "rationale": rec_raw.get("rationale", selected_hyp["reasoning_summary"])
     }
 
@@ -99,137 +116,178 @@ def run_root_cause_agent(state: InvestigationState) -> InvestigationState:
 
     state["agent_history"].append({
         "agent": "Root Cause Analyst Agent",
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "iteration": iteration,
-        "action": "Synthesized evidence and selected root cause hypothesis",
-        "findings": f"Selected root cause: '{selected_hyp['selected_root_cause']}' (confidence: {selected_hyp['confidence']}) with {len(filtered_supporting_ids)} supporting evidence items.",
+        "action": "Evaluated evidence catalog and synthesized causal hypothesis",
+        "findings": f"Selected root cause: '{selected_hyp['selected_root_cause']}' (Confidence: {selected_hyp['confidence']}) with {len(filtered_supporting_ids)} supporting evidence items.",
         "evidence_used": filtered_supporting_ids
     })
 
     return state
 
 
-def _deterministic_root_cause_analysis(incident: Dict[str, Any], evidence_list: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Domain-informed fallback root cause synthesis directly mapping grounded evidence."""
-    service = incident.get("service", "")
-    title = incident.get("title", "").lower()
-    desc = incident.get("description", "").lower()
+def _calibrate_confidence(
+    base_confidence: float,
+    supporting_ids: List[str],
+    contradictory_ids: List[str],
+    evidence_list: List[Dict[str, Any]]
+) -> float:
+    """Calibrates confidence based on diversity of independent supporting evidence sources and contradictions."""
+    if not supporting_ids:
+        return 0.20
 
-    # Collect available IDs by source
-    log_ids = [e["evidence_id"] for e in evidence_list if e.get("source") == "application_logs"]
-    metric_ids = [e["evidence_id"] for e in evidence_list if e.get("source") == "service_metrics"]
-    dep_ids = [e["evidence_id"] for e in evidence_list if e.get("source") == "deployment_records"]
-    runbook_ids = [e["evidence_id"] for e in evidence_list if e.get("source") == "operational_runbook"]
+    evidence_map = {e["evidence_id"]: e for e in evidence_list}
+    supporting_items = [evidence_map[eid] for eid in supporting_ids if eid in evidence_map]
 
-    all_evidence_text = " ".join([e.get("finding", "").lower() for e in evidence_list]) + " " + title + " " + desc
+    # Count distinct source types (e.g. log, metric, deployment, runbook)
+    distinct_sources = {item.get("source_type") for item in supporting_items}
 
-    if "queuepool" in all_evidence_text or "connection pool" in all_evidence_text or "db_connection_pool" in all_evidence_text:
+    score = base_confidence
+
+    # Penalty if evidence comes from only a single source type
+    if len(distinct_sources) < 2:
+        score = min(score, 0.65)
+    elif len(distinct_sources) >= 3:
+        score = max(score, 0.85)
+
+    # Penalty for unresolved contradictions
+    if contradictory_ids:
+        score = max(score - 0.25, 0.15)
+
+    return round(min(max(score, 0.10), 0.98), 2)
+
+
+def _synthesize_from_evidence(
+    incident: Dict[str, Any],
+    evidence_list: List[Dict[str, Any]]
+) -> Dict[str, Any]:
+    """Generic evidence-driven causal synthesis without benchmark-specific keywords or scenario lookup tables."""
+    service = incident.get("service", "service")
+
+    # If insufficient evidence is collected
+    if len(evidence_list) < 2:
         return {
-            "selected_root_cause": "Database connection pool exhaustion",
-            "confidence": 0.92,
-            "supporting_evidence_ids": log_ids[:2] + metric_ids[:2] + runbook_ids[:1],
+            "selected_root_cause": f"Inconclusive telemetry for {service}",
+            "confidence": 0.25,
+            "supporting_evidence_ids": [e["evidence_id"] for e in evidence_list],
             "contradictory_evidence_ids": [],
-            "reasoning_summary": "Database connection pool utilization reached capacity (98.5%), causing connection acquisition timeouts and HTTP 500 errors across payment transaction endpoints.",
+            "reasoning_summary": f"Insufficient telemetry collected ({len(evidence_list)} items). Unable to establish causal mechanism.",
             "hypotheses": [
-                {"id": "HYP-1", "title": "Database connection pool exhaustion", "confidence": 0.92, "supporting_evidence_ids": log_ids[:2] + metric_ids[:2]},
-                {"id": "HYP-2", "title": "Database server hardware crash", "confidence": 0.28, "supporting_evidence_ids": []},
-                {"id": "HYP-3", "title": "Network routing partition", "confidence": 0.12, "supporting_evidence_ids": []}
+                {
+                    "id": "HYP-1",
+                    "title": f"Inconclusive telemetry for {service}",
+                    "confidence": 0.25,
+                    "supporting_evidence_ids": [e["evidence_id"] for e in evidence_list],
+                    "contradictory_evidence_ids": [],
+                    "rationale": "Evidence count is below minimum threshold."
+                }
             ],
             "recommended_action": {
-                "action": f"Temporarily scale connection pool limits and restart {service} worker instances",
+                "action": f"Escalate {service} incident to on-call engineer for manual telemetry triage",
                 "target_service": service,
-                "rationale": "Resets stale connections and prevents client transaction checkout timeouts."
+                "estimated_risk": "LOW",
+                "rationale": "Automated diagnosis cannot proceed without sufficient telemetry."
             }
         }
 
-    elif "keyerror" in all_evidence_text or "v2.4.1" in all_evidence_text or "billing_address_v2" in all_evidence_text or "release" in all_evidence_text:
+    # Group evidence by source type
+    logs = [e for e in evidence_list if e.get("source_type") in ("log", "analytics")]
+    metrics = [e for e in evidence_list if e.get("source_type") == "metric"]
+    deployments = [e for e in evidence_list if e.get("source_type") == "deployment"]
+    runbooks = [e for e in evidence_list if e.get("source_type") == "runbook"]
+
+    # If zero empirical telemetry was found (only runbook or nothing)
+    if not logs and not metrics and not deployments:
         return {
-            "selected_root_cause": "Faulty application release (v2.4.1) with missing schema attribute validation",
-            "confidence": 0.95,
-            "supporting_evidence_ids": dep_ids[:1] + log_ids[:2] + metric_ids[:1] + runbook_ids[:1],
+            "selected_root_cause": f"Inconclusive: No empirical telemetry for {service}",
+            "confidence": 0.20,
+            "supporting_evidence_ids": [],
             "contradictory_evidence_ids": [],
-            "reasoning_summary": "Deployment DEP-201 (v2.4.1) introduced an unhandled KeyError: 'billing_address_v2', immediately triggering a 38.5% HTTP 500 error spike post-release.",
+            "reasoning_summary": f"No empirical telemetry (logs, metrics, deployments) exists for {service}.",
             "hypotheses": [
-                {"id": "HYP-1", "title": "Faulty application release (v2.4.1) with missing schema attribute validation", "confidence": 0.95, "supporting_evidence_ids": dep_ids[:1] + log_ids[:2]},
-                {"id": "HYP-2", "title": "Database migration schema mismatch", "confidence": 0.35, "supporting_evidence_ids": dep_ids[:1]},
-                {"id": "HYP-3", "title": "Upstream client invalid payload flooding", "confidence": 0.15, "supporting_evidence_ids": []}
+                {
+                    "id": "HYP-1",
+                    "title": f"Inconclusive telemetry for {service}",
+                    "confidence": 0.20,
+                    "supporting_evidence_ids": [],
+                    "contradictory_evidence_ids": [],
+                    "rationale": "Zero telemetry available."
+                }
             ],
             "recommended_action": {
-                "action": f"Rollback {service} to previous stable release v2.4.0 (DEP-202)",
+                "action": f"Escalate {service} incident to on-call engineer for manual telemetry triage",
                 "target_service": service,
-                "rationale": "Restores reliable payload processing and eliminates KeyError exceptions."
+                "estimated_risk": "LOW",
+                "rationale": "Zero telemetry available."
             }
         }
 
-    elif "oomkilled" in all_evidence_text or "memory_utilization" in all_evidence_text or "memory leak" in all_evidence_text:
-        return {
-            "selected_root_cause": "Process memory leak in session cache leading to container OOMKilled crashes",
-            "confidence": 0.91,
-            "supporting_evidence_ids": log_ids[:2] + metric_ids[:2] + runbook_ids[:1],
-            "contradictory_evidence_ids": [],
-            "reasoning_summary": "Memory utilization climbed steadily to 98.4% with recurring Linux kernel exit code 137 (OOMKilled) container terminations due to unbounded session token cache accumulation.",
-            "hypotheses": [
-                {"id": "HYP-1", "title": "Process memory leak in session cache leading to container OOMKilled crashes", "confidence": 0.91, "supporting_evidence_ids": log_ids[:2] + metric_ids[:2]},
-                {"id": "HYP-2", "title": "Sudden traffic volume surge", "confidence": 0.22, "supporting_evidence_ids": []},
-                {"id": "HYP-3", "title": "Host kernel node eviction", "confidence": 0.18, "supporting_evidence_ids": []}
-            ],
-            "recommended_action": {
-                "action": f"Perform rolling restart of {service} pods and configure session cache TTL eviction limit",
-                "target_service": service,
-                "rationale": "Recovers running pods and clears leaked memory buffers."
-            }
-        }
+    supporting_ids = []
+    reasoning_parts = []
 
-    elif "external-sms" in all_evidence_text or "gateway timeout" in all_evidence_text or "504" in all_evidence_text or "thirdparty" in all_evidence_text:
-        return {
-            "selected_root_cause": "Upstream third-party SMS gateway outage causing HTTP 504 timeouts and queue backlog",
-            "confidence": 0.89,
-            "supporting_evidence_ids": log_ids[:2] + metric_ids[:2] + runbook_ids[:1],
-            "contradictory_evidence_ids": [],
-            "reasoning_summary": "Upstream vendor gateway latency reached ~30s returning HTTP 504 Gateway Timeouts, accumulating a dispatch queue backlog of 14,850 messages without internal service failure.",
-            "hypotheses": [
-                {"id": "HYP-1", "title": "Upstream third-party SMS gateway outage causing HTTP 504 timeouts and queue backlog", "confidence": 0.89, "supporting_evidence_ids": log_ids[:2] + metric_ids[:2]},
-                {"id": "HYP-2", "title": "Internal notification worker thread deadlock", "confidence": 0.20, "supporting_evidence_ids": []},
-                {"id": "HYP-3", "title": "Local network packet throttling", "confidence": 0.15, "supporting_evidence_ids": []}
-            ],
-            "recommended_action": {
-                "action": f"Enable circuit breaker on {service} and divert traffic to secondary notification provider",
-                "target_service": service,
-                "rationale": "Prevents worker starvation and processes critical pending message backlogs."
-            }
-        }
+    # Pick representative supporting evidence from available categories
+    if logs:
+        primary_log = logs[0]
+        supporting_ids.append(primary_log["evidence_id"])
+        reasoning_parts.append(f"Log analysis revealed: {primary_log['finding']}")
 
-    elif "packet_loss" in all_evidence_text or "connection reset" in all_evidence_text or "retransmit" in all_evidence_text or "latency" in all_evidence_text:
-        return {
-            "selected_root_cause": "Inter-service network degradation with high packet drop rate and TCP retransmission",
-            "confidence": 0.88,
-            "supporting_evidence_ids": log_ids[:2] + metric_ids[:2] + runbook_ids[:1],
-            "contradictory_evidence_ids": [],
-            "reasoning_summary": "Network packet loss reached 19.4% with TCP retransmissions at 412/sec and p99 latency spiking to 8450ms, causing peer connection resets between user-service and datastore.",
-            "hypotheses": [
-                {"id": "HYP-1", "title": "Inter-service network degradation with high packet drop rate and TCP retransmission", "confidence": 0.88, "supporting_evidence_ids": log_ids[:2] + metric_ids[:2]},
-                {"id": "HYP-2", "title": "Datastore process crash", "confidence": 0.25, "supporting_evidence_ids": []},
-                {"id": "HYP-3", "title": "Application CPU throttling", "confidence": 0.12, "supporting_evidence_ids": []}
-            ],
-            "recommended_action": {
-                "action": f"Failover traffic for {service} to healthy secondary availability zone and flush interface MTU cache",
-                "target_service": service,
-                "rationale": "Bypasses degraded network link and eliminates packet drop."
-            }
-        }
+    if metrics:
+        primary_metric = metrics[0]
+        supporting_ids.append(primary_metric["evidence_id"])
+        reasoning_parts.append(f"Telemetry metric observed: {primary_metric['finding']}")
+
+    if deployments:
+        primary_dep = deployments[0]
+        supporting_ids.append(primary_dep["evidence_id"])
+        reasoning_parts.append(f"Correlated release: {primary_dep['finding']}")
+
+    if runbooks:
+        primary_runbook = runbooks[0]
+        supporting_ids.append(primary_runbook["evidence_id"])
+        reasoning_parts.append(f"Operational runbook reference: {primary_runbook['finding']}")
+
+    # Formulate root cause title directly from strongest observed evidence findings
+    lead_finding = logs[0]["finding"] if logs else (metrics[0]["finding"] if metrics else incident.get("title", ""))
+    root_cause_title = f"{service} degradation: {lead_finding}"
+
+    # Calculate explainable confidence based on corroboration
+    score = 0.50
+    if logs and metrics:
+        score += 0.20
+    if deployments:
+        score += 0.10
+    if runbooks:
+        score += 0.08
+    score = round(min(score, 0.92), 2)
 
     return {
-        "selected_root_cause": f"Unspecified performance degradation in {service}",
-        "confidence": 0.50,
-        "supporting_evidence_ids": (log_ids + metric_ids)[:2],
+        "selected_root_cause": root_cause_title,
+        "confidence": score,
+        "supporting_evidence_ids": supporting_ids,
         "contradictory_evidence_ids": [],
-        "reasoning_summary": "Insufficient correlated evidence across metrics, logs, and runbooks.",
+        "reasoning_summary": " | ".join(reasoning_parts),
         "hypotheses": [
-            {"id": "HYP-1", "title": f"Unspecified performance degradation in {service}", "confidence": 0.50, "supporting_evidence_ids": (log_ids + metric_ids)[:2]}
+            {
+                "id": "HYP-1",
+                "title": root_cause_title,
+                "confidence": score,
+                "supporting_evidence_ids": supporting_ids,
+                "contradictory_evidence_ids": [],
+                "rationale": "Corroborated by observed telemetry and runbook guidance."
+            },
+            {
+                "id": "HYP-2",
+                "title": f"Transient network or infrastructure partition affecting {service}",
+                "confidence": 0.25,
+                "supporting_evidence_ids": [],
+                "contradictory_evidence_ids": [],
+                "rationale": "Alternative possibility without direct corroborating metric signals."
+            }
         ],
         "recommended_action": {
-            "action": f"Perform manual operational triage on {service}",
+            "action": f"Apply operational runbook remediation and verify health of {service}",
             "target_service": service,
-            "rationale": "Evidence inconclusive."
+            "estimated_risk": "LOW",
+            "rationale": "Directly targets observed degradation pattern."
         }
     }

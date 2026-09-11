@@ -1,0 +1,280 @@
+{
+  "incidents": [
+    {
+      "id": "INC-001",
+      "title": "Elevated HTTP 500 errors and transaction timeouts on payment processing",
+      "description": "Payment processing latency surged to 4.8s with recurring connection acquisition timeout errors.",
+      "service": "payment-service",
+      "severity": "CRITICAL",
+      "offset_minutes": 45
+    },
+    {
+      "id": "INC-002",
+      "title": "Order checkout failures surging following release v2.4.1",
+      "description": "Customers unable to complete order placement. HTTP 500 error rate spiked to 38% immediately following deployment.",
+      "service": "order-service",
+      "severity": "CRITICAL",
+      "offset_minutes": 18
+    },
+    {
+      "id": "INC-003",
+      "title": "Recurring container restarts and authentication failures in auth-service",
+      "description": "Auth service pods restarting periodically. Memory utilization steadily climbs to 98% resulting in OOMKilled termination.",
+      "service": "auth-service",
+      "severity": "HIGH",
+      "offset_minutes": 120
+    },
+    {
+      "id": "INC-004",
+      "title": "Outbound SMS and push notification delivery failure backlog",
+      "description": "Notification dispatch queue backlog growing rapidly. External SMS gateway returning HTTP 504 timeouts.",
+      "service": "notification-service",
+      "severity": "MEDIUM",
+      "offset_minutes": 55
+    },
+    {
+      "id": "INC-005",
+      "title": "Inter-service communication timeouts and packet degradation on user-service",
+      "description": "Downstream calls to user-service experiencing heavy socket resets and 19% packet drop rates.",
+      "service": "user-service",
+      "severity": "HIGH",
+      "offset_minutes": 60
+    }
+  ],
+  "deployments": [
+    {
+      "id": "DEP-101",
+      "service": "payment-service",
+      "version": "v3.1.2",
+      "offset_minutes": 180,
+      "environment": "production"
+    },
+    {
+      "id": "DEP-102",
+      "service": "payment-service",
+      "version": "v3.1.1",
+      "offset_minutes": 7200,
+      "environment": "production"
+    },
+    {
+      "id": "DEP-201",
+      "service": "order-service",
+      "version": "v2.4.1",
+      "offset_minutes": 25,
+      "environment": "production"
+    },
+    {
+      "id": "DEP-202",
+      "service": "order-service",
+      "version": "v2.4.0",
+      "offset_minutes": 20160,
+      "environment": "production"
+    },
+    {
+      "id": "DEP-301",
+      "service": "auth-service",
+      "version": "v1.8.0",
+      "offset_minutes": 2880,
+      "environment": "production"
+    },
+    {
+      "id": "DEP-401",
+      "service": "notification-service",
+      "version": "v1.3.0",
+      "offset_minutes": 43200,
+      "environment": "production"
+    },
+    {
+      "id": "DEP-501",
+      "service": "user-service",
+      "version": "v2.1.0",
+      "offset_minutes": 17280,
+      "environment": "production"
+    }
+  ],
+  "logs": [
+    {
+      "id": "LOG-101",
+      "service": "payment-service",
+      "level": "ERROR",
+      "message": "TimeoutError: QueuePool limit of size 20 overflow 10 reached, connection acquisition timed out after 5.0s",
+      "trace_id": "tr-pay-811",
+      "offset_minutes": 40
+    },
+    {
+      "id": "LOG-102",
+      "service": "payment-service",
+      "level": "ERROR",
+      "message": "sqlalchemy.exc.TimeoutError: QueuePool limit of size 20 reached. Cannot checkout new database connection.",
+      "trace_id": "tr-pay-812",
+      "offset_minutes": 35
+    },
+    {
+      "id": "LOG-103",
+      "service": "payment-service",
+      "level": "WARN",
+      "message": "High DB connection pool wait time: 4890ms for worker thread 14",
+      "trace_id": "tr-pay-813",
+      "offset_minutes": 30
+    },
+    {
+      "id": "LOG-104",
+      "service": "payment-service",
+      "level": "INFO",
+      "message": "Payment gateway health check ping OK, database pool saturation persists",
+      "trace_id": "tr-pay-814",
+      "offset_minutes": 25
+    },
+    {
+      "id": "LOG-201",
+      "service": "order-service",
+      "level": "ERROR",
+      "message": "KeyError: 'billing_address_v2' in OrderProcessor.validate_payload() line 142",
+      "trace_id": "tr-ord-901",
+      "offset_minutes": 20
+    },
+    {
+      "id": "LOG-202",
+      "service": "order-service",
+      "level": "ERROR",
+      "message": "HTTP 500 Internal Server Error returned on POST /api/v1/orders - unhandled schema attribute exception",
+      "trace_id": "tr-ord-902",
+      "offset_minutes": 17
+    },
+    {
+      "id": "LOG-203",
+      "service": "order-service",
+      "level": "ERROR",
+      "message": "Unhandled exception during order placement: KeyError: 'billing_address_v2'",
+      "trace_id": "tr-ord-903",
+      "offset_minutes": 15
+    },
+    {
+      "id": "LOG-204",
+      "service": "order-service",
+      "level": "INFO",
+      "message": "Order service ingress receiving 420 req/sec",
+      "trace_id": "tr-ord-904",
+      "offset_minutes": 10
+    },
+    {
+      "id": "LOG-301",
+      "service": "auth-service",
+      "level": "ERROR",
+      "message": "Container auth-service-7f98d terminated with exit code 137 (OOMKilled by Linux kernel)",
+      "trace_id": "tr-auth-301",
+      "offset_minutes": 50
+    },
+    {
+      "id": "LOG-302",
+      "service": "auth-service",
+      "level": "WARN",
+      "message": "JVM heap memory usage exceeded 94% of cgroup limit in session cache storage",
+      "trace_id": "tr-auth-302",
+      "offset_minutes": 45
+    },
+    {
+      "id": "LOG-303",
+      "service": "auth-service",
+      "level": "ERROR",
+      "message": "Failed to allocate buffer: OutOfMemoryError in token cache session store",
+      "trace_id": "tr-auth-303",
+      "offset_minutes": 42
+    },
+    {
+      "id": "LOG-304",
+      "service": "auth-service",
+      "level": "INFO",
+      "message": "New container replica spawned following crash restart",
+      "trace_id": "tr-auth-304",
+      "offset_minutes": 30
+    },
+    {
+      "id": "LOG-401",
+      "service": "notification-service",
+      "level": "ERROR",
+      "message": "ThirdPartyGatewayError: HTTP 504 Gateway Timeout from api.external-sms-gateway.com",
+      "trace_id": "tr-notif-401",
+      "offset_minutes": 48
+    },
+    {
+      "id": "LOG-402",
+      "service": "notification-service",
+      "level": "ERROR",
+      "message": "Failed to send SMS dispatch to customer: ConnectTimeout after 30000ms connecting to vendor gateway",
+      "trace_id": "tr-notif-402",
+      "offset_minutes": 42
+    },
+    {
+      "id": "LOG-403",
+      "service": "notification-service",
+      "level": "WARN",
+      "message": "Outbound notification retry limit reached (attempt 3/3) for message chunk 8812",
+      "trace_id": "tr-notif-403",
+      "offset_minutes": 35
+    },
+    {
+      "id": "LOG-404",
+      "service": "notification-service",
+      "level": "INFO",
+      "message": "Notification queue depth is currently 14,850 pending messages",
+      "trace_id": "tr-notif-404",
+      "offset_minutes": 20
+    },
+    {
+      "id": "LOG-501",
+      "service": "user-service",
+      "level": "ERROR",
+      "message": "ClientConnectorError: Connection reset by peer connecting to user-profile-datastore:9042",
+      "trace_id": "tr-usr-501",
+      "offset_minutes": 50
+    },
+    {
+      "id": "LOG-502",
+      "service": "user-service",
+      "level": "ERROR",
+      "message": "ReadTimeoutError: Read timed out after 8000ms waiting for upstream socket data",
+      "trace_id": "tr-usr-502",
+      "offset_minutes": 45
+    },
+    {
+      "id": "LOG-503",
+      "service": "user-service",
+      "level": "WARN",
+      "message": "TCP retransmission count exceeded threshold on eth0 interface (412 retransmits/sec)",
+      "trace_id": "tr-usr-503",
+      "offset_minutes": 40
+    },
+    {
+      "id": "LOG-504",
+      "service": "user-service",
+      "level": "INFO",
+      "message": "User profile service cluster responding on local loopback interface",
+      "trace_id": "tr-usr-504",
+      "offset_minutes": 25
+    }
+  ],
+  "metrics": [
+    {"service": "payment-service", "metric_name": "db_connection_pool_utilization", "value": 98.5, "offset_minutes": 30},
+    {"service": "payment-service", "metric_name": "active_db_connections", "value": 30.0, "offset_minutes": 30},
+    {"service": "payment-service", "metric_name": "p99_latency_ms", "value": 4820.0, "offset_minutes": 30},
+    {"service": "payment-service", "metric_name": "cpu_utilization_percent", "value": 32.0, "offset_minutes": 30},
+    {"service": "payment-service", "metric_name": "memory_utilization_percent", "value": 45.0, "offset_minutes": 30},
+    {"service": "order-service", "metric_name": "http_error_rate_percent", "value": 38.5, "offset_minutes": 15},
+    {"service": "order-service", "metric_name": "cpu_utilization_percent", "value": 24.0, "offset_minutes": 15},
+    {"service": "order-service", "metric_name": "memory_utilization_percent", "value": 42.0, "offset_minutes": 15},
+    {"service": "order-service", "metric_name": "p99_latency_ms", "value": 130.0, "offset_minutes": 15},
+    {"service": "auth-service", "metric_name": "memory_utilization_percent", "value": 98.4, "offset_minutes": 40},
+    {"service": "auth-service", "metric_name": "container_restart_count", "value": 6.0, "offset_minutes": 40},
+    {"service": "auth-service", "metric_name": "cpu_utilization_percent", "value": 28.0, "offset_minutes": 40},
+    {"service": "auth-service", "metric_name": "p99_latency_ms", "value": 2100.0, "offset_minutes": 40},
+    {"service": "notification-service", "metric_name": "external_api_latency_ms", "value": 29800.0, "offset_minutes": 30},
+    {"service": "notification-service", "metric_name": "queue_depth", "value": 14850.0, "offset_minutes": 30},
+    {"service": "notification-service", "metric_name": "http_error_rate_percent", "value": 44.0, "offset_minutes": 30},
+    {"service": "notification-service", "metric_name": "cpu_utilization_percent", "value": 14.0, "offset_minutes": 30},
+    {"service": "user-service", "metric_name": "network_packet_loss_percent", "value": 19.4, "offset_minutes": 35},
+    {"service": "user-service", "metric_name": "p99_latency_ms", "value": 8450.0, "offset_minutes": 35},
+    {"service": "user-service", "metric_name": "tcp_retransmits_per_sec", "value": 412.0, "offset_minutes": 35},
+    {"service": "user-service", "metric_name": "cpu_utilization_percent", "value": 22.0, "offset_minutes": 35}
+  ]
+}

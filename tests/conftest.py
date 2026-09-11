@@ -1,14 +1,16 @@
+import os
 import pytest
 from fastapi.testclient import TestClient
-from app.db.database import SessionLocal, init_db
+from app.db.database import SessionLocal, init_db, Base, engine
 from app.db.seed import seed_database
 from app.main import app
 
 
 @pytest.fixture(scope="session", autouse=True)
 def setup_test_database():
-    """Initializes and seeds database once for test session."""
-    init_db()
+    """Initializes and seeds database once for test session with fresh schema."""
+    Base.metadata.drop_all(bind=engine)
+    Base.metadata.create_all(bind=engine)
     seed_database()
 
 

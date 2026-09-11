@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, Any, List
 from app.graph.state import InvestigationState
 from app.rag.retriever import get_retriever
@@ -6,48 +6,44 @@ from app.rag.retriever import get_retriever
 
 def run_runbook_agent(state: InvestigationState) -> InvestigationState:
     """Runbook / RAG Agent: Searches Qdrant vector database for matching operational runbooks."""
+    plan = state.get("investigation_plan", {})
+    required_agents = plan.get("required_agents", ["runbook"])
     incident = state["incident"]
     service = incident.get("service", "")
     title = incident.get("title", "")
-    description = incident.get("description", "")
     iteration = state.get("iteration_count", 0)
 
-    # Collect keywords from recent log findings to refine semantic search query
-    log_snippets = [e["finding"] for e in state["collected_evidence"] if e.get("source") == "application_logs"][:2]
+    # Skip if supervisor plan did not select runbook
+    if "runbook" not in required_agents:
+        return state
+
+    # Formulate search query using incident title and high-signal log findings
+    log_snippets = [
+        e["finding"] for e in state["collected_evidence"]
+        if e.get("source_type") == "log"
+    ][:2]
     combined_query = f"{title} {service} {' '.join(log_snippets)}"
 
     retriever = get_retriever()
-    runbook_matches = retriever.search_runbooks(query=combined_query, limit=2, min_score=0.3)
+    runbook_matches = retriever.search_runbooks(query=combined_query, limit=2)
 
     new_evidence = []
     for match in runbook_matches:
         if not any(e["evidence_id"] == match["evidence_id"] for e in state["collected_evidence"]):
-            new_evidence.append({
-                "evidence_id": match["evidence_id"],
-                "source": "operational_runbook",
-                "service": service,
-                "timestamp": datetime.utcnow().isoformat(),
-                "finding": match["finding"],
-                "details": {
-                    "source_doc": match["source"],
-                    "section": match["section"],
-                    "similarity_score": match["score"],
-                    "content": match["content"]
-                }
-            })
+            new_evidence.append(match)
 
     state["collected_evidence"].extend(new_evidence)
     state["current_agent"] = "runbook"
 
-    match_names = [m["source"] for m in runbook_matches]
+    match_names = [m["details"].get("source_doc", m["evidence_id"]) for m in runbook_matches]
     summary_findings = (
         f"Queried Qdrant runbook vector index for '{title[:40]}...'. "
-        f"Matched {len(runbook_matches)} runbook sections: {', '.join(match_names) if match_names else 'None'}."
+        f"Retrieved {len(runbook_matches)} operational runbook chunks: {', '.join(match_names) if match_names else 'None'}."
     )
 
     state["agent_history"].append({
         "agent": "Runbook / RAG Agent",
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "iteration": iteration,
         "action": f"Executed Qdrant semantic search for runbooks matching {service} incident",
         "findings": summary_findings,

@@ -13,8 +13,12 @@ class RunbookRetriever:
     _instance = None
 
     def __init__(self):
-        self.embedding_model = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
+        self.embedding_model = TextEmbedding(model_name=settings.embedding_model_name)
         self.collection_name = settings.qdrant_collection
+
+        # Dynamically determine embedding vector dimension
+        probe_vector = next(self.embedding_model.embed(["dimension_probe"]))
+        self.vector_size = len(probe_vector)
 
         # Initialize Qdrant Client based on URL or embedded path
         if settings.qdrant_url == ":memory:":
@@ -32,7 +36,7 @@ class RunbookRetriever:
         if self.collection_name not in collections:
             self.client.create_collection(
                 collection_name=self.collection_name,
-                vectors_config=VectorParams(size=384, distance=Distance.COSINE),
+                vectors_config=VectorParams(size=self.vector_size, distance=Distance.COSINE),
             )
             self.index_runbooks()
 
@@ -64,8 +68,16 @@ class RunbookRetriever:
         self.client.upsert(collection_name=self.collection_name, points=points)
         return len(points)
 
-    def search_runbooks(self, query: str, limit: int = 3, min_score: float = 0.3) -> List[Dict[str, Any]]:
-        """Semantic search against indexed runbooks."""
+    def search_runbooks(
+        self,
+        query: str,
+        limit: int = None,
+        min_score: float = None
+    ) -> List[Dict[str, Any]]:
+        """Semantic search against indexed operational runbooks."""
+        limit = limit or settings.rag_limit
+        min_score = min_score if min_score is not None else settings.rag_score_threshold
+
         query_embedding = list(self.embedding_model.embed([query]))[0].tolist()
 
         response = self.client.query_points(
@@ -79,14 +91,21 @@ class RunbookRetriever:
         results = []
         for hit in response.points:
             payload = hit.payload or {}
+            chunk_id = payload.get("chunk_id", f"RUNBOOK-{hit.id}")
             results.append({
-                "evidence_id": payload.get("chunk_id", f"RUNBOOK-{hit.id}"),
-                "source": payload.get("source"),
-                "title": payload.get("title"),
-                "section": payload.get("section"),
-                "content": payload.get("content"),
+                "evidence_id": chunk_id,
+                "source_type": "runbook",
+                "source": payload.get("source", "operational_runbook"),
+                "service": "all",
                 "score": round(float(hit.score), 3),
-                "finding": f"Runbook match [{payload.get('source')} - {payload.get('section')}]: {payload.get('content')[:140]}..."
+                "finding": f"Runbook guidance [{payload.get('source')} - {payload.get('section')}]: {payload.get('content')[:140]}...",
+                "details": {
+                    "source_doc": payload.get("source"),
+                    "title": payload.get("title"),
+                    "section": payload.get("section"),
+                    "similarity_score": round(float(hit.score), 3),
+                    "content": payload.get("content")
+                }
             })
 
         return results
