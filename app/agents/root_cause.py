@@ -3,7 +3,13 @@ import logging
 from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional
 from app.graph.state import InvestigationState, RootCauseOutput, ConfidenceAssessment
-from app.agents.llm import call_groq_json, get_groq_client
+from app.agents.llm import (
+    call_groq_json,
+    get_groq_client,
+    is_rate_limited,
+    get_rate_limit_reason,
+    LLMRateLimitError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +61,9 @@ def run_root_cause_agent(state: InvestigationState) -> InvestigationState:
                 f"{json.dumps(evidence_catalog, indent=2)}"
             )
             analysis_dict = call_groq_json(system_prompt, user_prompt, schema_model=RootCauseOutput)
+        except LLMRateLimitError as rle:
+            logger.warning(f"Groq root-cause inference skipped due to rate limit: {rle}. Using conservative fallback.")
+            analysis_dict = None
         except Exception as e:
             logger.warning(f"Groq root-cause inference failed or schema invalid: {e}. Using evidence-driven synthesis.")
             analysis_dict = None
@@ -118,6 +127,7 @@ def run_root_cause_agent(state: InvestigationState) -> InvestigationState:
     state["recommended_action"] = recommended_action
     state["current_agent"] = "root_cause"
 
+    rate_note = f" [LLM rate-limited: {get_rate_limit_reason()}]" if is_rate_limited() else ""
     state["agent_history"].append({
         "agent_key": "root_cause",
         "agent": "Root Cause Analyst Agent",
@@ -125,7 +135,7 @@ def run_root_cause_agent(state: InvestigationState) -> InvestigationState:
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "iteration": iteration,
         "action": "Evaluated evidence catalog and synthesized causal hypothesis",
-        "findings": f"Selected root cause: '{selected_hyp['selected_root_cause']}' (Evidence Quality: {confidence_assessment['level']} - {confidence_assessment['score']}) citing {len(raw_supporting_ids)} evidence items.",
+        "findings": f"Selected root cause: '{selected_hyp['selected_root_cause']}' (Evidence Quality: {confidence_assessment['level']} - {confidence_assessment['score']}) citing {len(raw_supporting_ids)} evidence items.{rate_note}",
         "evidence_used": raw_supporting_ids
     })
 
@@ -255,10 +265,17 @@ def _synthesize_from_evidence(
 
     signals_desc = ", ".join(telemetry_signals) if telemetry_signals else "no telemetry collected"
 
-    reasoning = (
-        f"Telemetry was collected ({signals_desc}), but automated causal inference was unavailable. "
-        "No causal root cause is asserted."
-    )
+    if is_rate_limited():
+        reason_str = get_rate_limit_reason() or "HTTP 429 rate limit / token exhaustion"
+        reasoning = (
+            f"Telemetry was collected ({signals_desc}), but automated causal LLM inference was unavailable "
+            f"due to rate limiting ({reason_str}). No causal root cause is asserted."
+        )
+    else:
+        reasoning = (
+            f"Telemetry was collected ({signals_desc}), but automated causal inference was unavailable. "
+            "No causal root cause is asserted."
+        )
 
     return {
         "selected_root_cause": "Inconclusive: automated causal inference unavailable",
