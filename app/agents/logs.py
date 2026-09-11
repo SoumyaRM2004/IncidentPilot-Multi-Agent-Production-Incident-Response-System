@@ -7,13 +7,14 @@ from app.tools.logs import search_logs, get_error_frequency, get_service_logs
 def run_log_agent(state: InvestigationState) -> InvestigationState:
     """Log Investigation Agent: Executes targeted log queries based on Supervisor plan."""
     plan = state.get("investigation_plan", {})
-    required_agents = plan.get("required_agents", ["logs"])
     service = state["incident"].get("service", "")
     iteration = state.get("iteration_count", 0)
 
-    # Skip if supervisor plan did not select logs
-    if "logs" not in required_agents:
-        return state
+    # Track executed specialist in state
+    if "executed_specialists" not in state:
+        state["executed_specialists"] = []
+    if "logs" not in state["executed_specialists"]:
+        state["executed_specialists"].append("logs")
 
     window_minutes = plan.get("window_minutes", 60)
     log_query = plan.get("log_query")
@@ -47,7 +48,7 @@ def run_log_agent(state: InvestigationState) -> InvestigationState:
         "agent": "Log Investigation Agent",
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "iteration": iteration,
-        "action": f"Executed search_logs and get_error_frequency for {service} (window: {window_minutes}m)",
+        "action": f"Executed search_logs and get_error_frequency for {service} (window: {window_minutes}m, query: {log_query or 'none'})",
         "findings": summary_findings,
         "evidence_added": [e["evidence_id"] for e in new_evidence]
     })

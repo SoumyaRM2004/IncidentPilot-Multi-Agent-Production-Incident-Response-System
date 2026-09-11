@@ -13,6 +13,16 @@ def test_search_logs_filtering():
         assert "finding" in l
 
 
+def test_search_logs_query_parameter():
+    """query parameter must actually filter log messages by substring."""
+    matching_logs = search_logs(service="payment-service", query="QueuePool", level="ERROR")
+    assert len(matching_logs) >= 1
+    assert "QueuePool" in matching_logs[0]["message"]
+
+    non_matching = search_logs(service="payment-service", query="NonexistentSubstringXYZ123")
+    assert len(non_matching) == 0
+
+
 def test_get_error_frequency():
     freq = get_error_frequency(service="payment-service", minutes=60)
     assert freq["service"] == "payment-service"
@@ -37,6 +47,17 @@ def test_deployments_tools():
     assert details["version"] == deps[0]["version"]
 
 
+def test_deployments_window_filtering():
+    """window_minutes parameter must filter out deployments outside the time range."""
+    # Seeded deployments are within the last 180 minutes
+    wide_deps = get_recent_deployments(service="order-service", window_minutes=600)
+    assert len(wide_deps) >= 1
+
+    # An extremely small window (0 minutes) should return zero deployments
+    zero_deps = get_recent_deployments(service="order-service", window_minutes=0)
+    assert len(zero_deps) == 0
+
+
 def test_metrics_tools():
     metrics = get_service_metrics(service="auth-service")
     assert len(metrics) >= 4
@@ -47,3 +68,14 @@ def test_metrics_tools():
     mem_metrics = get_service_metrics(service="auth-service", metric_name="memory_utilization_percent")
     assert len(mem_metrics) >= 1
     assert mem_metrics[0]["value"] > 90.0
+
+
+def test_metrics_window_filtering():
+    """window_minutes parameter must filter metrics outside the time window."""
+    # Window of 600 minutes should capture seeded metrics
+    wide_metrics = get_service_metrics(service="auth-service", metric_name="memory_utilization_percent", window_minutes=600)
+    assert len(wide_metrics) >= 1
+
+    # Window of 0 minutes should filter out all historical metrics
+    narrow_metrics = get_service_metrics(service="auth-service", metric_name="memory_utilization_percent", window_minutes=0)
+    assert len(narrow_metrics) == 0

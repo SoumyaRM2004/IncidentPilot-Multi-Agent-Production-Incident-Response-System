@@ -121,6 +121,7 @@ def start_investigation(incident_id: str, db: Session = Depends(get_db)):
             "hypotheses": final_state.get("hypotheses", []),
             "selected_hypothesis": final_state.get("selected_hypothesis"),
             "confidence": final_state.get("confidence"),
+            "confidence_assessment": final_state.get("confidence_assessment"),
             "verification_result": final_state.get("verification_result"),
             "recommended_action": final_state.get("recommended_action"),
             "agent_history": final_state.get("agent_history", []),
@@ -130,7 +131,9 @@ def start_investigation(incident_id: str, db: Session = Depends(get_db)):
         }
 
         inv_record.report = json.dumps(report_data)
-        incident.status = "RESOLVED" if inv_record.status == "SUCCESS" else "INVESTIGATION_FAILED"
+
+        # Honest lifecycle semantics: diagnosis does not execute remediation
+        incident.status = "ROOT_CAUSE_IDENTIFIED" if inv_record.status == "SUCCESS" else "INVESTIGATION_FAILED"
         db.commit()
         db.refresh(inv_record)
 
@@ -142,9 +145,10 @@ def start_investigation(incident_id: str, db: Session = Depends(get_db)):
         inv_record.completed_at = datetime.now(timezone.utc)
         incident.status = "INVESTIGATION_FAILED"
         db.commit()
+        # Clean, unexposed error message
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Investigation failed during multi-agent orchestration: {str(e)}"
+            detail="Investigation failed during multi-agent orchestration."
         )
 
 
@@ -163,7 +167,7 @@ def get_investigation(investigation_id: str, db: Session = Depends(get_db)):
 
 @router.post("/investigations/{investigation_id}/approve", response_model=InvestigationResponse, tags=["Approval"])
 def approve_investigation(investigation_id: str, payload: ApprovalDecisionRequest, db: Session = Depends(get_db)):
-    """Record persistent operator approval of proposed remediation."""
+    """Record persistent operator approval of proposed remediation with state transition validation."""
     inv = db.query(Investigation).filter(Investigation.id == investigation_id).first()
     if not inv:
         raise HTTPException(
@@ -171,9 +175,21 @@ def approve_investigation(investigation_id: str, payload: ApprovalDecisionReques
             detail=f"Investigation '{investigation_id}' not found."
         )
 
+    # Validate allowed state transitions
+    if inv.approval_status == "APPROVED":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Investigation is already APPROVED."
+        )
+    if inv.approval_status == "REJECTED":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot approve an already REJECTED investigation."
+        )
+
     now = datetime.now(timezone.utc)
-    inv.approval_status = "APPROVED" if payload.decision == "APPROVED" else "REJECTED"
-    inv.operator_decision = payload.decision
+    inv.approval_status = "APPROVED"
+    inv.operator_decision = "APPROVED"
     inv.approved_at = now
     inv.operator_notes = f"Operator: {payload.operator}. Notes: {payload.notes or 'None'}"
 
@@ -196,9 +212,46 @@ def approve_investigation(investigation_id: str, payload: ApprovalDecisionReques
 
 @router.post("/investigations/{investigation_id}/reject", response_model=InvestigationResponse, tags=["Approval"])
 def reject_investigation(investigation_id: str, payload: ApprovalDecisionRequest, db: Session = Depends(get_db)):
-    """Record operator rejection or escalation of proposed remediation."""
-    payload.decision = "REJECTED"
-    return approve_investigation(investigation_id=investigation_id, payload=payload, db=db)
+    """Record operator rejection or escalation of proposed remediation with state transition validation."""
+    inv = db.query(Investigation).filter(Investigation.id == investigation_id).first()
+    if not inv:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Investigation '{investigation_id}' not found."
+        )
+
+    # Validate allowed state transitions
+    if inv.approval_status == "REJECTED":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Investigation is already REJECTED."
+        )
+    if inv.approval_status == "APPROVED":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot reject an already APPROVED investigation."
+        )
+
+    now = datetime.now(timezone.utc)
+    inv.approval_status = "REJECTED"
+    inv.operator_decision = "REJECTED"
+    inv.approved_at = now
+    inv.operator_notes = f"Operator: {payload.operator}. Notes: {payload.notes or 'None'}"
+
+    if inv.report:
+        try:
+            report_dict = json.loads(inv.report)
+            report_dict["approval_status"] = inv.approval_status
+            report_dict["operator_decision"] = inv.operator_decision
+            report_dict["approved_at"] = now.isoformat()
+            report_dict["operator_notes"] = inv.operator_notes
+            inv.report = json.dumps(report_dict)
+        except Exception as e:
+            logger.warning(f"Could not update embedded report JSON: {e}")
+
+    db.commit()
+    db.refresh(inv)
+    return _format_investigation_response(inv)
 
 
 def _format_investigation_response(inv: Investigation) -> Dict[str, Any]:

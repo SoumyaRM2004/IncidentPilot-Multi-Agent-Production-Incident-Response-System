@@ -20,7 +20,7 @@ def search_logs(
             q = q.filter(Log.level == level.upper())
         if query:
             q = q.filter(Log.message.ilike(f"%{query}%"))
-        if window_minutes:
+        if window_minutes is not None:
             since = datetime.now(timezone.utc) - timedelta(minutes=window_minutes)
             q = q.filter(Log.timestamp >= since)
 

@@ -1,19 +1,22 @@
 from datetime import datetime, timezone
 from typing import Dict, Any, List
-from app.graph.state import InvestigationState, InvestigationPlanModel
+from app.graph.state import InvestigationState, InvestigationPlanModel, ALLOWED_AGENTS
 from app.agents.llm import call_groq_json, get_groq_client
-from app.config import settings
-
-ALLOWED_AGENTS = {"logs", "deployments", "metrics", "runbook"}
 
 
 def run_supervisor_agent(state: InvestigationState) -> InvestigationState:
-    """Supervisor Agent: Evaluates incident context, creates structured investigation plan, and adapts upon verification challenge."""
+    """Supervisor Agent: Evaluates incident context, creates validated investigation plan,
+
+    and adapts upon structured verification feedback without keyword parsing.
+    """
     incident = state["incident"]
     service = incident.get("service", "unknown")
     title = incident.get("title", "")
     description = incident.get("description", "")
     iteration = state.get("iteration_count", 0)
+
+    # Reset executed specialists for this iteration round
+    state["executed_specialists"] = []
 
     history_entry = {
         "agent": "Supervisor Agent",
@@ -21,38 +24,65 @@ def run_supervisor_agent(state: InvestigationState) -> InvestigationState:
         "iteration": iteration,
     }
 
-    # Adaptive re-investigation if triggered by verification challenge
+    # Adaptive re-investigation using STRUCTURED verification feedback
     if iteration > 0 and state.get("verification_result"):
         v_res = state["verification_result"]
-        explanation = v_res.get("explanation", "").lower()
+        category = v_res.get("challenge_category", "UNKNOWN")
+        requested_agents = v_res.get("requested_agent_types") or []
+        missing_evidence = v_res.get("missing_evidence_types") or []
+        suggested_window = v_res.get("suggested_time_window") or 120
 
-        # Adapt plan based on specific verification critique
-        selected_agents = ["logs", "metrics", "runbook"]
-        window_minutes = 120  # Expand temporal window
-        metric_names = None
-        log_query = None
-
-        if "deployment" in explanation or "release" in explanation:
-            selected_agents = ["deployments", "logs"]
-            window_minutes = 180
-        elif "metric" in explanation or "saturation" in explanation:
-            selected_agents = ["metrics", "logs"]
-            metric_names = ["db_connection_pool_utilization", "memory_utilization_percent", "http_error_rate_percent", "p99_latency_ms"]
-        elif "insufficient" in explanation:
-            selected_agents = ["logs", "deployments", "metrics", "runbook"]
-            window_minutes = 180
-
-        plan = {
-            "focus": f"Targeted re-investigation ({service}) addressing verification challenge: {v_res.get('explanation')}",
-            "required_agents": [a for a in selected_agents if a in ALLOWED_AGENTS],
-            "strategy": f"Expand time window to {window_minutes}m and query deeper telemetry to resolve verification gaps.",
-            "log_query": log_query,
-            "metric_names": metric_names,
-            "window_minutes": window_minutes
+        # Map missing evidence types to agent names
+        evidence_to_agent_map = {
+            "log": "logs",
+            "logs": "logs",
+            "deployment": "deployments",
+            "deployments": "deployments",
+            "metric": "metrics",
+            "metrics": "metrics",
+            "runbook": "runbook"
         }
 
+        selected_agents: List[str] = []
+
+        if requested_agents:
+            selected_agents = [a for a in requested_agents if a in ALLOWED_AGENTS]
+        elif missing_evidence:
+            for met in missing_evidence:
+                mapped = evidence_to_agent_map.get(met.lower())
+                if mapped and mapped in ALLOWED_AGENTS and mapped not in selected_agents:
+                    selected_agents.append(mapped)
+
+        if not selected_agents:
+            if category in ("LOW_SOURCE_DIVERSITY", "INSUFFICIENT_EVIDENCE"):
+                # Find which allowed agents have not yet contributed evidence
+                existing_sources = {e.get("source_type") for e in state.get("collected_evidence", [])}
+                unrepresented = []
+                if "log" not in existing_sources:
+                    unrepresented.append("logs")
+                if "metric" not in existing_sources:
+                    unrepresented.append("metrics")
+                if "deployment" not in existing_sources:
+                    unrepresented.append("deployments")
+                selected_agents = unrepresented if unrepresented else ["logs", "metrics", "deployments"]
+            else:
+                selected_agents = ["logs", "metrics", "deployments"]
+
+        # Validate through Pydantic model
+        plan_model = InvestigationPlanModel(
+            focus=f"Targeted re-investigation ({service}) addressing {category}",
+            required_agents=selected_agents,
+            strategy=f"Structured re-planning for challenge category '{category}'. Expanded window to {suggested_window}m.",
+            window_minutes=suggested_window,
+            metric_names=["db_connection_pool_utilization", "memory_utilization_percent", "http_error_rate_percent", "p99_latency_ms"] if "metrics" in selected_agents else None
+        )
+        plan = plan_model.model_dump()
+
         history_entry["action"] = f"Created adaptive re-investigation plan (Iteration {iteration})"
-        history_entry["findings"] = f"Targeting agents: {', '.join(plan['required_agents'])} with window {window_minutes}m based on challenge: '{v_res.get('explanation')}'."
+        history_entry["findings"] = (
+            f"Structured challenge feedback '{category}'. "
+            f"Targeting agents: {', '.join(plan['required_agents'])} with window {suggested_window}m."
+        )
 
     else:
         # Initial planning phase
@@ -62,10 +92,10 @@ def run_supervisor_agent(state: InvestigationState) -> InvestigationState:
         if client:
             try:
                 system_prompt = (
-                    "You are the Lead SRE Investigation Supervisor in IncidentPilot. "
-                    "Analyze the incident symptoms and produce a focused investigation plan. "
-                    "Select specialist agents strictly from: ['logs', 'deployments', 'metrics', 'runbook']. "
-                    "Provide specific log query keywords and metric names to inspect."
+                    "You are the Lead SRE Investigation Supervisor in IncidentPilot.\n"
+                    "Analyze the incident symptoms and produce a focused investigation plan.\n"
+                    "Select specialist agents strictly from: ['logs', 'deployments', 'metrics', 'runbook'].\n"
+                    "Output valid JSON matching the schema."
                 )
                 user_prompt = (
                     f"Incident Title: {title}\n"
@@ -77,22 +107,14 @@ def run_supervisor_agent(state: InvestigationState) -> InvestigationState:
                 plan_dict = None
 
         if not plan_dict:
-            # Deterministic, symptom-aware initial plan without benchmark keyword hardcoding
             plan_dict = _create_initial_plan(service, title, description)
 
-        # Enforce agent allowlist validation
-        valid_agents = [a for a in plan_dict.get("required_agents", []) if a in ALLOWED_AGENTS]
-        if not valid_agents:
-            valid_agents = ["logs", "deployments", "metrics", "runbook"]
+        # Validate and sanitize through Pydantic
+        plan_model = InvestigationPlanModel.model_validate(plan_dict)
+        plan = plan_model.model_dump()
 
-        plan = {
-            "focus": plan_dict.get("focus", f"Triage incident on {service}"),
-            "required_agents": valid_agents,
-            "strategy": plan_dict.get("strategy", "Correlate error logs, recent deployments, metrics, and runbooks."),
-            "log_query": plan_dict.get("log_query"),
-            "metric_names": plan_dict.get("metric_names"),
-            "window_minutes": plan_dict.get("window_minutes", 60)
-        }
+        if not plan["required_agents"]:
+            plan["required_agents"] = ["logs", "metrics", "runbook"]
 
         history_entry["action"] = "Formulated initial multi-agent investigation plan"
         history_entry["findings"] = f"Strategy: {plan['strategy']}. Delegating to: {', '.join(plan['required_agents'])}."
@@ -104,11 +126,11 @@ def run_supervisor_agent(state: InvestigationState) -> InvestigationState:
 
 
 def _create_initial_plan(service: str, title: str, description: str) -> Dict[str, Any]:
-    """Generates a structured investigation plan tailored to incident symptoms."""
+    """Generates a structured investigation plan tailored to incident symptoms without benchmark keywords."""
     text = f"{title} {description}".lower()
     selected_agents = ["logs", "metrics", "runbook"]
 
-    # Include deployments if release, update, deploy, or change is hinted
+    # Include deployments if release, version, or deployment signals are indicated
     if any(k in text for k in ["deploy", "release", "version", "update", "rolled", "commit", "crash", "outage", "spike"]):
         selected_agents.append("deployments")
 
