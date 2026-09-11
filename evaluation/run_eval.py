@@ -14,6 +14,12 @@ from app.agents.llm import get_groq_client
 
 
 def _simulate_root_cause_llm(system_prompt, user_prompt, schema_model=None):
+    """Deterministic evaluation stub for offline pipeline regression testing.
+
+    Extracts findings from the specialist evidence catalog and formats candidate
+    hypotheses to test end-to-end telemetry aggregation and Layer 1 verification flow.
+    NOTE: This is NOT an AI causal reasoning model.
+    """
     import re
     service_match = re.search(r'Service:\s*([^\n]+)', user_prompt)
     service = service_match.group(1).strip() if service_match else "service"
@@ -90,12 +96,19 @@ def evaluate_system():
         benchmarks = json.load(f)
 
     groq_client = get_groq_client()
-    mode_str = "LIVE GROQ LLM" if groq_client else "DETERMINISTIC SIMULATED SEMANTIC VERIFIER"
+    if groq_client:
+        mode_str = "LIVE_LLM_EVALUATION"
+        mode_desc = "Live Groq LLM causal inference & semantic verification enabled."
+    else:
+        mode_str = "OFFLINE_PIPELINE_REGRESSION"
+        mode_desc = "Deterministic evaluation stub / pipeline regression mode (Semantic LLM evaluation not executed)."
+
     print(f"Execution Mode: {mode_str}")
+    print(f"Mode Details:   {mode_desc}")
     print("=" * 85)
 
     total_incidents = len(benchmarks)
-    correct_root_causes = 0
+    matched_rc_signals = 0
     total_cited_evidence = 0
     grounded_cited_evidence = 0
     hallucinated_evidence = 0
@@ -147,20 +160,21 @@ def evaluate_system():
         iterations = state.get("iteration_count", 0)
         total_iterations += iterations
 
-        # 1. Root Cause Accuracy
+        # 1. Expected RCA Signal Match & Safe Abstention Check
         keywords = item.get("expected_root_cause_keywords", [])
         if not expected_v:
-            rc_matched = (
-                state.get("investigation_status") in ("INSUFFICIENT_EVIDENCE", "INVESTIGATION_FAILED", "VERIFICATION_UNAVAILABLE") or
-                any(kw.lower() in root_cause_str for kw in keywords)
+            safe_abstention = (
+                state.get("investigation_status") in ("INSUFFICIENT_EVIDENCE", "INVESTIGATION_FAILED", "VERIFICATION_UNAVAILABLE")
+                and not actual_v
             )
-            if state.get("investigation_status") in ("INSUFFICIENT_EVIDENCE", "INVESTIGATION_FAILED"):
+            if safe_abstention:
                 insufficient_safety_passes += 1
+            rc_matched = safe_abstention or any(kw.lower() in root_cause_str for kw in keywords)
         else:
             rc_matched = any(kw.lower() in root_cause_str for kw in keywords)
 
         if rc_matched:
-            correct_root_causes += 1
+            matched_rc_signals += 1
 
         # 2. Evidence Grounding & Hallucination Check
         item_cited = len(supporting_ids)
@@ -170,11 +184,20 @@ def evaluate_system():
         grounded_cited_evidence += item_grounded
         hallucinated_evidence += item_hallucinated
 
-        # 3. Source Diversity Check for non-insufficient scenarios
+        # 3. Source Diversity Check (Canonical Empirical Domains: log, metric, deployment)
+        # Identical to production verification.py semantics (analytics maps to log; runbook is operational guidance)
         if expected_v:
             supporting_items = [collected_map[eid] for eid in supporting_ids if eid in collected_map]
-            empirical_sources = {item.get("source_type") for item in supporting_items if item.get("source_type") in ("log", "metric", "deployment", "analytics")}
-            if len(empirical_sources) >= 2:
+            empirical_domains = set()
+            for s_item in supporting_items:
+                st = s_item.get("source_type")
+                if st in ("log", "analytics"):
+                    empirical_domains.add("log")
+                elif st == "metric":
+                    empirical_domains.add("metric")
+                elif st == "deployment":
+                    empirical_domains.add("deployment")
+            if len(empirical_domains) >= 2:
                 source_diversity_passes += 1
 
         # 4. Verification Accuracy
@@ -187,51 +210,68 @@ def evaluate_system():
             "Category": category,
             "Service": service,
             "Root Cause": selected_hyp.get("selected_root_cause", "None")[:30] + "...",
-            "RC Match": "PASS" if rc_matched else "FAIL",
+            "Signal Match": "PASS" if rc_matched else "FAIL",
             "Evidence Grounding": f"{item_grounded}/{item_cited}",
             "Verified": "PASS" if v_matched else "FAIL",
             "Iterations": str(iterations),
             "Score": f"{int(state.get('confidence', 0) * 100)}%"
         })
 
-    rc_accuracy = (correct_root_causes / total_incidents) * 100
+    rc_signal_match_rate = (matched_rc_signals / total_incidents) * 100
     evidence_grounding_rate = (grounded_cited_evidence / total_cited_evidence * 100) if total_cited_evidence > 0 else 100.0
     hallucination_rate = (hallucinated_evidence / total_cited_evidence * 100) if total_cited_evidence > 0 else 0.0
+    hallucination_rejection_rate = 100.0 - hallucination_rate
     verification_accuracy = (correct_verifications / total_incidents) * 100
     expected_non_empty = sum(1 for item in benchmarks if item.get("expected_verification", True))
     source_diversity_rate = (source_diversity_passes / expected_non_empty * 100) if expected_non_empty > 0 else 100.0
+    expected_abstentions = sum(1 for item in benchmarks if not item.get("expected_verification", True))
+    abstention_safety_rate = (insufficient_safety_passes / expected_abstentions * 100) if expected_abstentions > 0 else 100.0
     avg_iterations = total_iterations / total_incidents
 
     print("\n" + "=" * 85)
     print("EVALUATION RESULTS SUMMARY")
     print("=" * 85)
-    header = f"{'ID':<9} | {'Category':<15} | {'Service':<18} | {'RC':<4} | {'Evidence':<8} | {'Verif':<5} | {'Iters':<5} | {'Score':<5}"
+    header = f"{'ID':<9} | {'Category':<15} | {'Service':<18} | {'Signal':<6} | {'Evidence':<8} | {'Verif':<5} | {'Iters':<5} | {'Score':<5}"
     print(header)
     print("-" * 85)
     for r in results_table:
-        print(f"{r['Incident ID']:<9} | {r['Category']:<15} | {r['Service']:<18} | {r['RC Match']:<4} | {r['Evidence Grounding']:<8} | {r['Verified']:<5} | {r['Iterations']:<5} | {r['Score']:<5}")
+        print(f"{r['Incident ID']:<9} | {r['Category']:<15} | {r['Service']:<18} | {r['Signal Match']:<6} | {r['Evidence Grounding']:<8} | {r['Verified']:<5} | {r['Iterations']:<5} | {r['Score']:<5}")
 
     print("=" * 85)
-    print("KEY METRICS:")
-    print(f"1. Root Cause Accuracy:         {rc_accuracy:.1f}% ({correct_root_causes}/{total_incidents})")
-    print(f"2. Evidence Grounding Rate:       {evidence_grounding_rate:.1f}% ({grounded_cited_evidence}/{total_cited_evidence} citations grounded in telemetry)")
-    print(f"3. Hallucination Rate:           {hallucination_rate:.1f}% ({hallucinated_evidence}/{total_cited_evidence} fabricated citations)")
-    print(f"4. Empirical Source Diversity:   {source_diversity_rate:.1f}% ({source_diversity_passes}/{expected_non_empty} verified cases with >= 2 empirical sources)")
-    print(f"5. Verification Accuracy:        {verification_accuracy:.1f}% ({correct_verifications}/{total_incidents} correctly judged)")
-    print(f"6. Avg Iterations to Converge:   {avg_iterations:.2f}")
+    print("PIPELINE CORRECTNESS & SAFETY METRICS:")
+    print(f"1. Evidence Grounding Rate:          {evidence_grounding_rate:.1f}% ({grounded_cited_evidence}/{total_cited_evidence} citations grounded in telemetry)")
+    print(f"2. Hallucinated Citation Rejection:  {hallucination_rejection_rate:.1f}% ({total_cited_evidence - hallucinated_evidence}/{total_cited_evidence} non-fabricated citations)")
+    print(f"3. Empirical Source Diversity:       {source_diversity_rate:.1f}% ({source_diversity_passes}/{expected_non_empty} verified cases with >= 2 empirical domains)")
+    print(f"4. Insufficient Evidence Abstention: {abstention_safety_rate:.1f}% ({insufficient_safety_passes}/{expected_abstentions} uncorroborated cases safely abstained)")
+    print(f"5. Verification Decision Accuracy:   {verification_accuracy:.1f}% ({correct_verifications}/{total_incidents} verdicts matched expected safety criteria)")
+    print(f"6. Avg Iterations to Converge:       {avg_iterations:.2f}")
+    print("-" * 85)
+    print("RCA REGRESSION METRIC:")
+    print(f"7. Expected RCA Signal Match:        {rc_signal_match_rate:.1f}% ({matched_rc_signals}/{total_incidents} expected diagnostic patterns detected)")
+    print("   [Notice: Lightweight regression check based on expected textual signals in synthetic telemetry.")
+    print("    It is NOT a statistically validated measure of autonomous causal reasoning accuracy.]")
+    print("-" * 85)
+    print("SEMANTIC LLM EVALUATION:")
+    if groq_client:
+        print("8. Status:                           Live Groq LLM causal inference & semantic verification EXERCISED.")
+    else:
+        print("8. Status:                           Semantic LLM evaluation NOT EXECUTED (deterministic pipeline regression mode).")
     print("=" * 85)
 
-    assert rc_accuracy >= 80.0, f"Root cause accuracy below threshold: {rc_accuracy}%"
+    assert rc_signal_match_rate >= 80.0, f"RCA signal match below threshold: {rc_signal_match_rate}%"
     assert evidence_grounding_rate == 100.0, f"Unverified evidence detected: {evidence_grounding_rate}%"
     assert hallucination_rate == 0.0, f"Hallucinated citations detected: {hallucination_rate}%"
     assert verification_accuracy >= 80.0, f"Verification accuracy below threshold: {verification_accuracy}%"
+    assert source_diversity_rate == 100.0, f"Source diversity rate below threshold: {source_diversity_rate}%"
 
     print("ALL EVALUATION BENCHMARKS PASSED SUCCESSFULLY.")
     return {
-        "root_cause_accuracy": rc_accuracy,
+        "execution_mode": mode_str,
+        "expected_rca_signal_match": rc_signal_match_rate,
         "evidence_grounding_rate": evidence_grounding_rate,
-        "hallucination_rate": hallucination_rate,
+        "hallucination_rejection_rate": hallucination_rejection_rate,
         "empirical_source_diversity": source_diversity_rate,
+        "insufficient_evidence_abstention": abstention_safety_rate,
         "verification_accuracy": verification_accuracy,
         "avg_iterations": avg_iterations,
         "total_incidents": total_incidents

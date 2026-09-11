@@ -4,7 +4,7 @@
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.110.0-009688.svg)](https://fastapi.tiangolo.com/)
 [![LangGraph](https://img.shields.io/badge/LangGraph-0.0.30-orange.svg)](https://github.com/langchain-ai/langgraph)
 [![Qdrant](https://img.shields.io/badge/Qdrant-Vector%20DB-red.svg)](https://qdrant.tech/)
-[![Tests](https://img.shields.io/badge/Tests-48%20passed-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/Tests-50%20passed-brightgreen.svg)](tests/)
 
 IncidentPilot is an evidence-grounded multi-agent incident response system designed to investigate simulated production incidents. Built with **Python 3.11, LangGraph, Groq LLM, Qdrant, SQLAlchemy, FastAPI, and Streamlit**, IncidentPilot coordinates specialized investigation agents across logs, metrics, deployment changes, and operational runbooks to formulate, challenge, and verify evidence-backed root cause diagnoses and recommend human-gated remediation actions.
 
@@ -362,54 +362,73 @@ FastAPI application exposes clean endpoints with request/response Pydantic model
 
 ## 12. Evaluation Benchmark & Empirical Results
 
-The system is evaluated against a benchmark dataset of **10 production incidents** across 5 categories (`evaluation/incidents.json`):
+The system is evaluated against a synthetic benchmark suite of **10 production incidents** across 5 categories (`evaluation/incidents.json`) with seeded telemetry (`data/seed_data.json`):
 1. **Standard Scenarios (5 incidents)**: Ground-truth production failures (DB pool saturation, bad deployment, OOM leak, third-party SMS 504, network degradation).
-2. **Paraphrased Scenarios (2 incidents)**: Completely reworded symptoms to prove zero dependency on keyword matching.
+2. **Paraphrased Scenarios (2 incidents)**: Completely reworded symptoms to test resilience against prompt variation.
 3. **Noisy Telemetry (1 incident)**: Intermittent warnings and background noise to verify robust signal extraction.
 4. **Insufficient Telemetry (1 incident)**: Missing metrics and logs to verify safe termination without hallucination.
 5. **Contradictory Telemetry (1 incident)**: Alerts without corroborating telemetry to verify rejection.
+
+> [!NOTE]
+> **Evaluation Mode & Benchmark Disclosure**: The benchmark scenarios use synthetic incident descriptions and seeded database telemetry. Evaluation supports two modes:
+> - **`LIVE_LLM_EVALUATION`**: Uses a live Groq API key to exercise full semantic causal inference and Layer 2 challenge verification.
+> - **`OFFLINE_PIPELINE_REGRESSION`**: Uses a deterministic evaluation stub to validate pipeline wiring, database telemetry retrieval, Layer 1 deterministic verification, and expected signal matching without requiring live LLM credentials. The **Expected RCA Signal Match** is a lightweight regression check against expected diagnostic signals, not a statistically calibrated measure of autonomous causal reasoning.
 
 ### Empirical Evaluation Output:
 ```
 =====================================================================================
 IncidentPilot Multi-Agent Production Incident Response Evaluation
 =====================================================================================
-Execution Mode: DETERMINISTIC SIMULATED SEMANTIC VERIFIER
+Successfully seeded database: 5 incidents, 7 deployments, 20 logs, 21 metrics.
+Execution Mode: OFFLINE_PIPELINE_REGRESSION
+Mode Details:   Deterministic evaluation stub / pipeline regression mode (Semantic LLM evaluation not executed).
 =====================================================================================
-ID        | Category        | Service            | RC   | Evidence | Verif | Iters | Score
+
+=====================================================================================
+EVALUATION RESULTS SUMMARY
+=====================================================================================
+ID        | Category        | Service            | Signal | Evidence | Verif | Iters | Score
 -------------------------------------------------------------------------------------
-INC-001   | standard        | payment-service    | PASS | 3/3      | PASS  | 0     | 80%  
-INC-002   | standard        | order-service      | PASS | 3/3      | PASS  | 0     | 80%  
-INC-003   | standard        | auth-service       | PASS | 3/3      | PASS  | 0     | 80%  
-INC-004   | standard        | notification-service | PASS | 3/3      | PASS  | 0     | 80%  
-INC-005   | standard        | user-service       | PASS | 3/3      | PASS  | 0     | 80%  
-INC-006   | paraphrased     | payment-service    | PASS | 3/3      | PASS  | 0     | 80%  
-INC-007   | paraphrased     | order-service      | PASS | 3/3      | PASS  | 0     | 80%  
-INC-008   | noisy           | auth-service       | PASS | 3/3      | PASS  | 0     | 80%  
-INC-009   | insufficient_telemetry | analytics-service  | PASS | 0/0      | PASS  | 2     | 20%  
-INC-010   | contradictory   | ghost-nonexistent-service | PASS | 0/0      | PASS  | 2     | 20%  
+INC-001   | standard        | payment-service    | PASS   | 3/3      | PASS  | 0     | 80%  
+INC-002   | standard        | order-service      | PASS   | 3/3      | PASS  | 0     | 80%  
+INC-003   | standard        | auth-service       | PASS   | 3/3      | PASS  | 0     | 80%  
+INC-004   | standard        | notification-service | PASS   | 3/3      | PASS  | 0     | 80%  
+INC-005   | standard        | user-service       | PASS   | 3/3      | PASS  | 0     | 80%  
+INC-006   | paraphrased     | payment-service    | PASS   | 3/3      | PASS  | 0     | 80%  
+INC-007   | paraphrased     | order-service      | PASS   | 3/3      | PASS  | 0     | 80%  
+INC-008   | noisy           | auth-service       | PASS   | 3/3      | PASS  | 0     | 80%  
+INC-009   | insufficient_telemetry | analytics-service  | PASS   | 0/0      | PASS  | 2     | 20%  
+INC-010   | contradictory   | ghost-nonexistent-service | PASS   | 0/0      | PASS  | 2     | 20%  
 =====================================================================================
-KEY METRICS:
-1. Root Cause Accuracy:         100.0% (10/10)
-2. Evidence Grounding Rate:       100.0% (24/24 citations grounded in telemetry)
-3. Hallucination Rate:           0.0% (0/24 fabricated citations)
-4. Empirical Source Diversity:   100.0% (8/8 verified cases with >= 2 empirical sources)
-5. Verification Accuracy:        100.0% (10/10 correctly judged)
-6. Avg Iterations to Converge:   0.40
+PIPELINE CORRECTNESS & SAFETY METRICS:
+1. Evidence Grounding Rate:          100.0% (24/24 citations grounded in telemetry)
+2. Hallucinated Citation Rejection:  100.0% (24/24 non-fabricated citations)
+3. Empirical Source Diversity:       100.0% (8/8 verified cases with >= 2 empirical domains)
+4. Insufficient Evidence Abstention: 100.0% (2/2 uncorroborated cases safely abstained)
+5. Verification Decision Accuracy:   100.0% (10/10 verdicts matched expected safety criteria)
+6. Avg Iterations to Converge:       0.40
+-------------------------------------------------------------------------------------
+RCA REGRESSION METRIC:
+7. Expected RCA Signal Match:        100.0% (10/10 expected diagnostic patterns detected)
+   [Notice: Lightweight regression check based on expected textual signals in synthetic telemetry.
+    It is NOT a statistically validated measure of autonomous causal reasoning accuracy.]
+-------------------------------------------------------------------------------------
+SEMANTIC LLM EVALUATION:
+8. Status:                           Semantic LLM evaluation NOT EXECUTED (deterministic pipeline regression mode).
 =====================================================================================
 ALL EVALUATION BENCHMARKS PASSED SUCCESSFULLY.
 ```
 
 ### Pytest Verification Suite:
 ```
-============================== 48 passed in 2.72s ==============================
+============================== 50 passed in 2.33s ==============================
 - Supervisor allowlist validation, conservative fallback & plan control: 4 tests
-- Dynamic routing & unselected node skipping: 6 tests
+- Dynamic routing, iteration budget & unselected node skipping: 7 tests
 - Telemetry tool window & query parameter filtering: 9 tests
 - Hallucinated citation preservation & detection: 3 tests
 - Source diversity (empirical domains vs runbook, log+analytics): 5 tests
 - Conservative root-cause fallback & inconclusive handling: 2 tests
-- Two-layer verification & Layer 2 unavailability: 4 tests
+- Two-layer verification, Layer 2 unavailability & adversarial causality: 5 tests
 - Database models & schema migrations: 4 tests
 - API lifecycle, approval transitions & sanitized errors: 5 tests
 - Frontend decoupling & execution trace derivation: 2 tests
