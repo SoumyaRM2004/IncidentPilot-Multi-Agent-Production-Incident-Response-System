@@ -1,0 +1,47 @@
+[
+  {
+    "id": "INC-001",
+    "service": "payment-service",
+    "title": "Elevated HTTP 500 errors and transaction timeouts on payment processing",
+    "description": "Payment processing latency surged to 4.8s with recurring connection acquisition timeout errors.",
+    "expected_root_cause_keywords": ["connection pool", "queuepool", "database"],
+    "expected_evidence_types": ["application_logs", "service_metrics", "operational_runbook"],
+    "expected_verification": true
+  },
+  {
+    "id": "INC-002",
+    "service": "order-service",
+    "title": "Order checkout failures surging following release v2.4.1",
+    "description": "Customers unable to complete order placement. HTTP 500 error rate spiked to 38% immediately following deployment.",
+    "expected_root_cause_keywords": ["v2.4.1", "release", "deployment", "keyerror", "schema"],
+    "expected_evidence_types": ["deployment_records", "application_logs", "service_metrics"],
+    "expected_verification": true
+  },
+  {
+    "id": "INC-003",
+    "service": "auth-service",
+    "title": "Recurring container restarts and authentication failures in auth-service",
+    "description": "Auth service pods restarting periodically. Memory utilization steadily climbs to 98% resulting in OOMKilled termination.",
+    "expected_root_cause_keywords": ["memory", "oomkilled", "cache"],
+    "expected_evidence_types": ["application_logs", "service_metrics", "operational_runbook"],
+    "expected_verification": true
+  },
+  {
+    "id": "INC-004",
+    "service": "notification-service",
+    "title": "Outbound SMS and push notification delivery failure backlog",
+    "description": "Notification dispatch queue backlog growing rapidly. External SMS gateway returning HTTP 504 timeouts.",
+    "expected_root_cause_keywords": ["gateway", "sms", "external", "thirdparty", "504"],
+    "expected_evidence_types": ["application_logs", "service_metrics", "operational_runbook"],
+    "expected_verification": true
+  },
+  {
+    "id": "INC-005",
+    "service": "user-service",
+    "title": "Inter-service communication timeouts and packet degradation on user-service",
+    "description": "Downstream calls to user-service experiencing heavy socket resets and 19% packet drop rates.",
+    "expected_root_cause_keywords": ["network", "packet", "latency", "degradation"],
+    "expected_evidence_types": ["application_logs", "service_metrics", "operational_runbook"],
+    "expected_verification": true
+  }
+]
