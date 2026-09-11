@@ -1,8 +1,6 @@
 import os
-import json
-import streamlit as st
 import requests
-from datetime import datetime
+import streamlit as st
 
 API_BASE_URL = os.getenv("API_BASE_URL", "http://127.0.0.1:8000")
 
@@ -15,87 +13,84 @@ st.set_page_config(
 st.title("🛡️ IncidentPilot")
 st.caption("Autonomous Multi-Agent Production Incident Response & Triage System (V1)")
 
-# Sidebar: Controls & Incident Selection
-st.sidebar.header("Active Incidents")
+
+def check_api_health():
+    """Verify backend API connectivity."""
+    try:
+        resp = requests.get(f"{API_BASE_URL}/health", timeout=3)
+        return resp.status_code == 200
+    except Exception:
+        return False
+
 
 def fetch_incidents():
+    """Fetch incidents strictly through FastAPI backend."""
     try:
         resp = requests.get(f"{API_BASE_URL}/incidents", timeout=5)
         if resp.status_code == 200:
             return resp.json()
-    except Exception:
-        # Fallback to direct DB read if API is not running
-        from app.db.database import SessionLocal
-        from app.db.models import Incident
-        db = SessionLocal()
-        try:
-            incs = db.query(Incident).order_by(Incident.created_at.desc()).all()
-            return [
-                {
-                    "id": i.id,
-                    "title": i.title,
-                    "description": i.description,
-                    "service": i.service,
-                    "severity": i.severity,
-                    "status": i.status,
-                    "created_at": i.created_at.isoformat()
-                }
-                for i in incs
-            ]
-        finally:
-            db.close()
+        st.sidebar.error(f"API Error: HTTP {resp.status_code}")
+    except requests.exceptions.RequestException as e:
+        st.sidebar.error("⚠️ Backend API Unavailable. Ensure FastAPI server is running on " + API_BASE_URL)
     return []
 
+
+# Check API availability first
+if not check_api_health():
+    st.error(
+        f"🚨 **Backend API Unreachable**\n\n"
+        f"IncidentPilot frontend strictly communicates via the REST API at `{API_BASE_URL}`. "
+        f"Direct database and agent access from the UI is disabled by design.\n\n"
+        f"To start the backend, run:\n```bash\nuvicorn app.main:app --host 0.0.0.0 --port 8000\n```"
+    )
+    st.stop()
+
+# Sidebar: Incident Selection
+st.sidebar.header("Incident Management")
 incidents = fetch_incidents()
-incident_options = {f"[{i['id']}] {i['service']} - {i['title'][:50]}...": i for i in incidents}
+incident_options = {f"[{i['id']}] {i['service']} - {i['title'][:45]}...": i for i in incidents}
 
 selected_label = st.sidebar.selectbox(
-    "Select Incident to Investigate:",
-    options=list(incident_options.keys()) if incident_options else ["No incidents found"]
+    "Select Active Incident:",
+    options=list(incident_options.keys()) if incident_options else ["No incidents available"]
 )
 
-# Sidebar: Create new incident modal
+# Sidebar: Create New Incident Form
 with st.sidebar.expander("➕ Report New Incident"):
     with st.form("new_incident_form"):
-        new_title = st.text_input("Incident Title")
-        new_service = st.selectbox("Service", ["payment-service", "order-service", "auth-service", "notification-service", "user-service"])
+        new_title = st.text_input("Title")
+        new_service = st.selectbox(
+            "Service",
+            ["payment-service", "order-service", "auth-service", "notification-service", "user-service", "api-gateway"]
+        )
         new_severity = st.selectbox("Severity", ["CRITICAL", "HIGH", "MEDIUM", "LOW"])
-        new_desc = st.text_area("Incident Description")
-        submitted = st.form_submit_button("Submit Incident")
-        if submitted and new_title and new_desc:
-            payload = {
-                "title": new_title,
-                "description": new_desc,
-                "service": new_service,
-                "severity": new_severity
-            }
-            try:
-                r = requests.post(f"{API_BASE_URL}/incidents", json=payload, timeout=5)
-                if r.status_code == 201:
-                    st.success("Incident created successfully!")
-                    st.rerun()
-            except Exception:
-                from app.db.database import SessionLocal
-                from app.db.models import Incident
-                import uuid
-                db = SessionLocal()
-                try:
-                    inc = Incident(
-                        id=f"INC-{uuid.uuid4().hex[:6].upper()}",
-                        title=new_title,
-                        description=new_desc,
-                        service=new_service,
-                        severity=new_severity,
-                        status="OPEN"
-                    )
-                    db.add(inc)
-                    db.commit()
-                    st.success("Incident saved to local database!")
-                    st.rerun()
-                finally:
-                    db.close()
+        new_desc = st.text_area("Symptoms & Impact Description")
+        submitted = st.form_submit_button("Submit Incident to API")
 
-# Main Layout
+        if submitted:
+            if not new_title or not new_desc:
+                st.warning("Please provide both title and description.")
+            else:
+                try:
+                    resp = requests.post(
+                        f"{API_BASE_URL}/incidents",
+                        json={
+                            "title": new_title,
+                            "description": new_desc,
+                            "service": new_service,
+                            "severity": new_severity
+                        },
+                        timeout=5
+                    )
+                    if resp.status_code == 201:
+                        st.success("Incident recorded in backend!")
+                        st.rerun()
+                    else:
+                        st.error(f"Failed to create incident: {resp.text}")
+                except Exception as e:
+                    st.error(f"Failed to reach API: {e}")
+
+# Main View
 if incident_options and selected_label in incident_options:
     curr_inc = incident_options[selected_label]
 
@@ -111,57 +106,43 @@ if incident_options and selected_label in incident_options:
 
     st.markdown(f"**Description:** {curr_inc['description']}")
 
-    # Investigation Action
+    # Trigger Autonomous Investigation
     st.divider()
-    if st.button("🚀 Trigger Autonomous Investigation", type="primary"):
-        with st.spinner("Multi-agent system investigating logs, deployments, metrics, and runbooks..."):
-            report_data = None
+    if st.button("🚀 Trigger Autonomous Multi-Agent Investigation", type="primary"):
+        with st.spinner("Multi-agent system investigating logs, deployments, telemetry metrics, and runbooks..."):
             try:
-                resp = requests.post(f"{API_BASE_URL}/incidents/{curr_inc['id']}/investigate", timeout=30)
+                resp = requests.post(f"{API_BASE_URL}/incidents/{curr_inc['id']}/investigate", timeout=45)
                 if resp.status_code == 200:
-                    report_data = resp.json().get("report")
-            except Exception:
-                # Direct LangGraph fallback execution
-                from app.graph.workflow import run_investigation
-                final_state = run_investigation(curr_inc)
-                report_data = {
-                    "incident_summary": curr_inc,
-                    "investigation_plan": final_state.get("investigation_plan"),
-                    "evidence": final_state.get("collected_evidence", []),
-                    "hypotheses": final_state.get("hypotheses", []),
-                    "selected_hypothesis": final_state.get("selected_hypothesis"),
-                    "confidence": final_state.get("confidence"),
-                    "verification_result": final_state.get("verification_result"),
-                    "recommended_action": final_state.get("recommended_action"),
-                    "agent_history": final_state.get("agent_history", []),
-                    "iteration_count": final_state.get("iteration_count", 0),
-                    "human_approval_required": True,
-                    "approval_status": "PENDING_APPROVAL"
-                }
+                    inv_data = resp.json()
+                    st.session_state[f"inv_{curr_inc['id']}"] = inv_data
+                    st.success("Investigation complete!")
+                else:
+                    st.error(f"Investigation failed: {resp.text}")
+            except Exception as e:
+                st.error(f"API communication error during investigation: {e}")
 
-            if report_data:
-                st.session_state[f"report_{curr_inc['id']}"] = report_data
+    # Display Investigation Findings
+    inv_data = st.session_state.get(f"inv_{curr_inc['id']}")
+    if inv_data:
+        report = inv_data.get("report") or {}
+        inv_id = inv_data.get("id")
 
-    # Display Investigation Findings if available
-    report = st.session_state.get(f"report_{curr_inc['id']}")
-    if report:
-        st.subheader("1. Agent Orchestration Workflow")
+        st.subheader("1. Agent Orchestration Trace")
         agent_steps = [
-            ("Supervisor Agent", "Created investigation plan and coordinated agents"),
-            ("Log Investigation Agent", "Queried application logs & error frequency"),
-            ("Deployment Agent", "Analyzed deployment history and temporal correlation"),
-            ("Metrics Agent", "Checked telemetry metrics and thresholds"),
-            ("Runbook / RAG Agent", "Searched Qdrant vector database for runbooks"),
-            ("Root Cause Analyst", "Formulated & ranked root-cause hypotheses"),
-            ("Verification Agent", "Audited evidence validity & challenged hypothesis")
+            ("Supervisor Agent", "Created plan & targeted specialist queries"),
+            ("Log Agent", "Extracted log errors & frequency anomalies"),
+            ("Deployment Agent", "Analyzed recent releases & changesets"),
+            ("Metrics Agent", "Evaluated telemetry threshold saturation"),
+            ("Runbook / RAG Agent", "Searched Qdrant vector store for guidance"),
+            ("Root Cause Analyst", "Synthesized evidence-backed hypotheses"),
+            ("Verification Agent", "Two-layer audit & evidence validation")
         ]
-
         cols = st.columns(len(agent_steps))
-        for idx, (agent_name, role) in enumerate(agent_steps):
+        for idx, (name, desc) in enumerate(agent_steps):
             with cols[idx]:
-                st.success(f"**{agent_name}**\n\n✅ Done")
+                st.success(f"**{name}**\n\n✅ Executed")
 
-        st.subheader("2. Root Cause Analysis & Confidence")
+        st.subheader("2. Root Cause Analysis & Calibrated Confidence")
         selected_hyp = report.get("selected_hypothesis", {})
         verif = report.get("verification_result", {})
 
@@ -172,23 +153,69 @@ if incident_options and selected_label in incident_options:
             st.markdown(f"**Supporting Evidence IDs:** `{', '.join(selected_hyp.get('supporting_evidence_ids', []))}`")
         with c2:
             st.metric("Confidence", f"{int(report.get('confidence', 0.0) * 100)}%")
-            v_status = "VERIFIED ✅" if verif.get("verified") else "INSUFFICIENT EVIDENCE ⚠️"
+            v_status = "VERIFIED ✅" if verif.get("verified") else "CHALLENGED / INSUFFICIENT ⚠️"
             st.info(f"Verification: **{v_status}**")
+            st.caption(verif.get("explanation", ""))
 
-        st.subheader("3. Human-in-the-Loop & Recommended Action")
+        st.subheader("3. Human-in-the-Loop Approval & Remediation")
         rec = report.get("recommended_action", {})
-        st.warning("⚠️ **HUMAN APPROVAL REQUIRED** - Destructive or production-modifying remediation is strictly gated.")
-        st.markdown(f"**Recommended Action:** `{rec.get('action')}`")
-        st.markdown(f"**Target Service:** `{rec.get('target_service')}` | **Risk Level:** `{rec.get('estimated_risk', 'LOW')}`")
+        st.warning("⚠️ **HUMAN APPROVAL GATING** — Destructive or production-modifying remediation is strictly gated.")
+        st.info("ℹ️ *Notice: Simulated Remediation Gating — No real destructive production commands are executed.*")
+
+        st.markdown(f"**Proposed Remediation:** `{rec.get('action')}`")
+        st.markdown(f"**Target Service:** `{rec.get('target_service')}` | **Estimated Risk:** `{rec.get('estimated_risk', 'LOW')}`")
         st.markdown(f"**Rationale:** {rec.get('rationale')}")
 
-        col_appr1, col_appr2 = st.columns(2)
-        with col_appr1:
-            if st.button("✅ Approve Simulated Remediation", key="approve_btn"):
-                st.success("Remediation approved by operator! Simulated execution completed.")
-        with col_appr2:
-            if st.button("❌ Reject / Escalate to Senior SRE", key="reject_btn"):
-                st.error("Remediation rejected. Incident escalated to on-call human SRE.")
+        current_approval = inv_data.get("approval_status", "PENDING_APPROVAL")
+        st.markdown(f"**Current Status:** `{current_approval}`")
+
+        if inv_data.get("approved_at"):
+            st.markdown(f"**Decision Recorded:** `{inv_data.get('operator_decision')}` at `{inv_data.get('approved_at')}`")
+            if inv_data.get("operator_notes"):
+                st.caption(f"Notes: {inv_data.get('operator_notes')}")
+
+        if current_approval == "PENDING_APPROVAL":
+            operator_name = st.text_input("Operator Identifier", value="sre-oncall-engineer", key=f"op_{inv_id}")
+            operator_notes = st.text_input("Approval Notes / Audit Justification", value="Approved based on verified telemetry.", key=f"notes_{inv_id}")
+
+            col_appr1, col_appr2 = st.columns(2)
+            with col_appr1:
+                if st.button("✅ Submit Operator Approval", key=f"approve_btn_{inv_id}"):
+                    try:
+                        resp = requests.post(
+                            f"{API_BASE_URL}/investigations/{inv_id}/approve",
+                            json={
+                                "operator": operator_name,
+                                "decision": "APPROVED",
+                                "notes": operator_notes
+                            },
+                            timeout=5
+                        )
+                        if resp.status_code == 200:
+                            st.session_state[f"inv_{curr_inc['id']}"] = resp.json()
+                            st.success("Approval recorded in backend database!")
+                            st.rerun()
+                    except Exception as e:
+                        st.error(f"Failed to record approval: {e}")
+
+            with col_appr2:
+                if st.button("❌ Reject / Escalate to Senior SRE", key=f"reject_btn_{inv_id}"):
+                    try:
+                        resp = requests.post(
+                            f"{API_BASE_URL}/investigations/{inv_id}/reject",
+                            json={
+                                "operator": operator_name,
+                                "decision": "REJECTED",
+                                "notes": operator_notes
+                            },
+                            timeout=5
+                        )
+                        if resp.status_code == 200:
+                            st.session_state[f"inv_{curr_inc['id']}"] = resp.json()
+                            st.warning("Rejection and escalation recorded in backend database!")
+                            st.rerun()
+                    except Exception as e:
+                        st.error(f"Failed to record rejection: {e}")
 
         st.subheader("4. Collected Evidence Catalog (Audit Trail)")
         evidence_list = report.get("evidence", [])
@@ -196,6 +223,7 @@ if incident_options and selected_label in incident_options:
             table_data = [
                 {
                     "ID": e.get("evidence_id"),
+                    "Type": e.get("source_type", "unknown"),
                     "Source": e.get("source"),
                     "Finding": e.get("finding")
                 }
@@ -203,10 +231,10 @@ if incident_options and selected_label in incident_options:
             ]
             st.dataframe(table_data, use_container_width=True)
 
-        st.subheader("5. Detailed Agent Execution Trace")
-        with st.expander("View Agent Trace Log"):
+        st.subheader("5. Detailed Multi-Agent Trace")
+        with st.expander("View Chronological Agent Trace"):
             for h in report.get("agent_history", []):
-                st.markdown(f"**{h.get('agent')}** ({h.get('timestamp')[:19]}):")
+                st.markdown(f"**{h.get('agent')}** ({h.get('timestamp')[:19]} UTC) — Iteration {h.get('iteration', 0)}:")
                 st.markdown(f"- *Action:* {h.get('action')}")
                 st.markdown(f"- *Findings:* {h.get('findings')}")
                 st.divider()

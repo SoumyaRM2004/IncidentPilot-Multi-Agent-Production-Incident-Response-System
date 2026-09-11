@@ -8,6 +8,7 @@ from app.agents.metrics import run_metrics_agent
 from app.agents.runbook import run_runbook_agent
 from app.agents.root_cause import run_root_cause_agent
 from app.agents.verification import run_verification_agent
+from app.config import settings
 
 
 def route_after_verification(state: InvestigationState) -> Literal["supervisor", "__end__"]:
@@ -22,7 +23,7 @@ def route_after_verification(state: InvestigationState) -> Literal["supervisor",
 
     # If verification failed but iteration count is within budget, re-investigate
     iteration = state.get("iteration_count", 0)
-    max_iterations = state.get("max_iterations", 2)
+    max_iterations = state.get("max_iterations", settings.max_investigation_iterations)
 
     if iteration <= max_iterations and status != "INSUFFICIENT_EVIDENCE":
         return "supervisor"
@@ -52,7 +53,7 @@ def create_investigation_graph():
     workflow.add_edge("runbook", "root_cause")
     workflow.add_edge("root_cause", "verification")
 
-    # Conditional branch from verification: PASS -> END; FAIL -> supervisor (re-investigate) or END (insufficient)
+    # Conditional branch from verification: PASS -> END; FAIL -> supervisor (adaptive loop) or END (insufficient)
     workflow.add_conditional_edges(
         "verification",
         route_after_verification,
@@ -65,8 +66,9 @@ def create_investigation_graph():
     return workflow.compile()
 
 
-def create_initial_state(incident: Dict[str, Any], max_iterations: int = 2) -> InvestigationState:
+def create_initial_state(incident: Dict[str, Any], max_iterations: int = None) -> InvestigationState:
     """Helper to initialize the shared LangGraph investigation state."""
+    max_iters = max_iterations if max_iterations is not None else settings.max_investigation_iterations
     return {
         "incident": incident,
         "investigation_plan": {},
@@ -80,12 +82,12 @@ def create_initial_state(incident: Dict[str, Any], max_iterations: int = 2) -> I
         "investigation_status": "RUNNING",
         "agent_history": [],
         "iteration_count": 0,
-        "max_iterations": max_iterations,
+        "max_iterations": max_iters,
         "error_message": None
     }
 
 
-def run_investigation(incident: Dict[str, Any], max_iterations: int = 2) -> InvestigationState:
+def run_investigation(incident: Dict[str, Any], max_iterations: int = None) -> InvestigationState:
     """Executes the full LangGraph investigation workflow for an incident."""
     graph = create_investigation_graph()
     initial_state = create_initial_state(incident=incident, max_iterations=max_iterations)

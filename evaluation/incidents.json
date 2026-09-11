@@ -1,15 +1,17 @@
 [
   {
     "id": "INC-001",
+    "category": "standard",
     "service": "payment-service",
     "title": "Elevated HTTP 500 errors and transaction timeouts on payment processing",
     "description": "Payment processing latency surged to 4.8s with recurring connection acquisition timeout errors.",
-    "expected_root_cause_keywords": ["connection pool", "queuepool", "database"],
+    "expected_root_cause_keywords": ["connection pool", "queuepool", "database", "exhaustion"],
     "expected_evidence_types": ["application_logs", "service_metrics", "operational_runbook"],
     "expected_verification": true
   },
   {
     "id": "INC-002",
+    "category": "standard",
     "service": "order-service",
     "title": "Order checkout failures surging following release v2.4.1",
     "description": "Customers unable to complete order placement. HTTP 500 error rate spiked to 38% immediately following deployment.",
@@ -19,15 +21,17 @@
   },
   {
     "id": "INC-003",
+    "category": "standard",
     "service": "auth-service",
     "title": "Recurring container restarts and authentication failures in auth-service",
     "description": "Auth service pods restarting periodically. Memory utilization steadily climbs to 98% resulting in OOMKilled termination.",
-    "expected_root_cause_keywords": ["memory", "oomkilled", "cache"],
+    "expected_root_cause_keywords": ["memory", "oomkilled", "cache", "leak"],
     "expected_evidence_types": ["application_logs", "service_metrics", "operational_runbook"],
     "expected_verification": true
   },
   {
     "id": "INC-004",
+    "category": "standard",
     "service": "notification-service",
     "title": "Outbound SMS and push notification delivery failure backlog",
     "description": "Notification dispatch queue backlog growing rapidly. External SMS gateway returning HTTP 504 timeouts.",
@@ -37,11 +41,52 @@
   },
   {
     "id": "INC-005",
+    "category": "standard",
     "service": "user-service",
     "title": "Inter-service communication timeouts and packet degradation on user-service",
     "description": "Downstream calls to user-service experiencing heavy socket resets and 19% packet drop rates.",
     "expected_root_cause_keywords": ["network", "packet", "latency", "degradation"],
     "expected_evidence_types": ["application_logs", "service_metrics", "operational_runbook"],
     "expected_verification": true
+  },
+  {
+    "id": "INC-006",
+    "category": "paraphrased",
+    "service": "payment-service",
+    "title": "Customer checkout transactions stalling and dropping with SQLAlchemy driver errors",
+    "description": "Checkout requests are hanging at DB checkout stage; worker threads waiting on idle pool connections.",
+    "expected_root_cause_keywords": ["connection pool", "pool", "exhaustion", "database", "queuepool", "sqlalchemy"],
+    "expected_evidence_types": ["application_logs", "service_metrics", "operational_runbook"],
+    "expected_verification": true
+  },
+  {
+    "id": "INC-007",
+    "category": "paraphrased",
+    "service": "order-service",
+    "title": "Sudden spike in unhandled exceptions immediately following the latest Canary rollout",
+    "description": "Payload parsing exceptions in order processing pipeline after shipping git commit tagged v2.4.1.",
+    "expected_root_cause_keywords": ["deployment", "v2.4.1", "schema", "release", "rollout", "keyerror"],
+    "expected_evidence_types": ["deployment_records", "application_logs", "service_metrics"],
+    "expected_verification": true
+  },
+  {
+    "id": "INC-008",
+    "category": "noisy",
+    "service": "auth-service",
+    "title": "Transient latency spikes and warnings reported during auth token renewals",
+    "description": "Intermittent warnings logged during token validation while cache memory utilization continues expanding near capacity.",
+    "expected_root_cause_keywords": ["memory", "oom", "cache", "resource", "auth"],
+    "expected_evidence_types": ["application_logs", "service_metrics", "operational_runbook"],
+    "expected_verification": true
+  },
+  {
+    "id": "INC-009",
+    "category": "insufficient_telemetry",
+    "service": "analytics-service",
+    "title": "Dashboard reporting stale aggregation metrics",
+    "description": "Data warehouse sync appears delayed. No error logs or metrics reported from downstream pipeline.",
+    "expected_root_cause_keywords": ["insufficient", "inconclusive", "missing", "telemetry", "telemetry data"],
+    "expected_evidence_types": [],
+    "expected_verification": false
   }
 ]

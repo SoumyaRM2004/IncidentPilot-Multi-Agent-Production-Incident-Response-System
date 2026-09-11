@@ -1,7 +1,8 @@
 import json
 import uuid
-from datetime import datetime
-from typing import List
+import logging
+from datetime import datetime, timezone
+from typing import List, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from app.db.database import get_db
@@ -10,10 +11,12 @@ from app.api.schemas import (
     IncidentCreate,
     IncidentResponse,
     InvestigationResponse,
+    ApprovalDecisionRequest,
     HealthResponse,
 )
 from app.graph.workflow import run_investigation
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
@@ -23,7 +26,7 @@ def health_check():
     return {
         "status": "healthy",
         "service": "IncidentPilot Autonomous Incident Response API",
-        "timestamp": datetime.utcnow()
+        "timestamp": datetime.now(timezone.utc)
     }
 
 
@@ -37,7 +40,7 @@ def create_incident(incident_in: IncidentCreate, db: Session = Depends(get_db)):
         description=incident_in.description,
         service=incident_in.service,
         severity=incident_in.severity.upper(),
-        created_at=datetime.utcnow(),
+        created_at=datetime.now(timezone.utc),
         status="OPEN"
     )
     db.add(incident)
@@ -75,14 +78,14 @@ def start_investigation(incident_id: str, db: Session = Depends(get_db)):
         )
 
     investigation_id = f"INV-{uuid.uuid4().hex[:6].upper()}"
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
 
-    # Record initial running state
     inv_record = Investigation(
         id=investigation_id,
         incident_id=incident.id,
         started_at=now,
-        status="RUNNING"
+        status="RUNNING",
+        approval_status="PENDING_APPROVAL"
     )
     incident.status = "INVESTIGATING"
     db.add(inv_record)
@@ -94,12 +97,12 @@ def start_investigation(incident_id: str, db: Session = Depends(get_db)):
         "description": incident.description,
         "service": incident.service,
         "severity": incident.severity,
-        "created_at": incident.created_at.isoformat()
+        "created_at": incident.created_at.isoformat() if incident.created_at else now.isoformat()
     }
 
     try:
         final_state = run_investigation(incident=incident_dict)
-        completed_at = datetime.utcnow()
+        completed_at = datetime.now(timezone.utc)
 
         inv_record.completed_at = completed_at
         inv_record.status = final_state.get("investigation_status", "INVESTIGATION_FAILED")
@@ -123,38 +126,31 @@ def start_investigation(incident_id: str, db: Session = Depends(get_db)):
             "agent_history": final_state.get("agent_history", []),
             "iteration_count": final_state.get("iteration_count", 0),
             "human_approval_required": True,
-            "approval_status": final_state.get("recommended_action", {}).get("approval_status", "PENDING_APPROVAL")
+            "approval_status": "PENDING_APPROVAL"
         }
 
         inv_record.report = json.dumps(report_data)
-        incident.status = "INVESTIGATED" if inv_record.status == "SUCCESS" else "INVESTIGATION_FAILED"
+        incident.status = "RESOLVED" if inv_record.status == "SUCCESS" else "INVESTIGATION_FAILED"
         db.commit()
         db.refresh(inv_record)
 
-        return {
-            "id": inv_record.id,
-            "incident_id": inv_record.incident_id,
-            "started_at": inv_record.started_at,
-            "completed_at": inv_record.completed_at,
-            "status": inv_record.status,
-            "final_confidence": inv_record.final_confidence,
-            "report": report_data
-        }
+        return _format_investigation_response(inv_record)
 
     except Exception as e:
+        logger.exception(f"Investigation {investigation_id} failed during orchestration: {e}")
         inv_record.status = "INVESTIGATION_FAILED"
-        inv_record.completed_at = datetime.utcnow()
+        inv_record.completed_at = datetime.now(timezone.utc)
         incident.status = "INVESTIGATION_FAILED"
         db.commit()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Investigation failed during agent orchestration: {str(e)}"
+            detail=f"Investigation failed during multi-agent orchestration: {str(e)}"
         )
 
 
 @router.get("/investigations/{investigation_id}", response_model=InvestigationResponse, tags=["Investigations"])
 def get_investigation(investigation_id: str, db: Session = Depends(get_db)):
-    """Retrieve full investigation report and status."""
+    """Retrieve full investigation report, audit trail, and persistent approval status."""
     inv = db.query(Investigation).filter(Investigation.id == investigation_id).first()
     if not inv:
         raise HTTPException(
@@ -162,7 +158,57 @@ def get_investigation(investigation_id: str, db: Session = Depends(get_db)):
             detail=f"Investigation '{investigation_id}' not found."
         )
 
-    parsed_report = json.loads(inv.report) if inv.report else None
+    return _format_investigation_response(inv)
+
+
+@router.post("/investigations/{investigation_id}/approve", response_model=InvestigationResponse, tags=["Approval"])
+def approve_investigation(investigation_id: str, payload: ApprovalDecisionRequest, db: Session = Depends(get_db)):
+    """Record persistent operator approval of proposed remediation."""
+    inv = db.query(Investigation).filter(Investigation.id == investigation_id).first()
+    if not inv:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Investigation '{investigation_id}' not found."
+        )
+
+    now = datetime.now(timezone.utc)
+    inv.approval_status = "APPROVED" if payload.decision == "APPROVED" else "REJECTED"
+    inv.operator_decision = payload.decision
+    inv.approved_at = now
+    inv.operator_notes = f"Operator: {payload.operator}. Notes: {payload.notes or 'None'}"
+
+    # Update embedded JSON report to reflect persistent approval
+    if inv.report:
+        try:
+            report_dict = json.loads(inv.report)
+            report_dict["approval_status"] = inv.approval_status
+            report_dict["operator_decision"] = inv.operator_decision
+            report_dict["approved_at"] = now.isoformat()
+            report_dict["operator_notes"] = inv.operator_notes
+            inv.report = json.dumps(report_dict)
+        except Exception as e:
+            logger.warning(f"Could not update embedded report JSON: {e}")
+
+    db.commit()
+    db.refresh(inv)
+    return _format_investigation_response(inv)
+
+
+@router.post("/investigations/{investigation_id}/reject", response_model=InvestigationResponse, tags=["Approval"])
+def reject_investigation(investigation_id: str, payload: ApprovalDecisionRequest, db: Session = Depends(get_db)):
+    """Record operator rejection or escalation of proposed remediation."""
+    payload.decision = "REJECTED"
+    return approve_investigation(investigation_id=investigation_id, payload=payload, db=db)
+
+
+def _format_investigation_response(inv: Investigation) -> Dict[str, Any]:
+    """Helper to deserialize report JSON and format response."""
+    parsed_report = None
+    if inv.report:
+        try:
+            parsed_report = json.loads(inv.report)
+        except Exception:
+            parsed_report = None
 
     return {
         "id": inv.id,
@@ -171,5 +217,9 @@ def get_investigation(investigation_id: str, db: Session = Depends(get_db)):
         "completed_at": inv.completed_at,
         "status": inv.status,
         "final_confidence": inv.final_confidence,
+        "approval_status": inv.approval_status,
+        "approved_at": inv.approved_at,
+        "operator_decision": inv.operator_decision,
+        "operator_notes": inv.operator_notes,
         "report": parsed_report
     }
