@@ -2,9 +2,8 @@ import json
 import logging
 from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional
-from app.graph.state import InvestigationState, RootCauseOutput, HypothesisItem, RecommendedAction
+from app.graph.state import InvestigationState, RootCauseOutput, ConfidenceAssessment
 from app.agents.llm import call_groq_json, get_groq_client
-from app.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -41,9 +40,9 @@ def run_root_cause_agent(state: InvestigationState) -> InvestigationState:
                 "Your objective is to evaluate empirical telemetry evidence and operational runbooks to identify the primary root cause.\n"
                 "STRICT REQUIREMENTS:\n"
                 "1. Formulate 2 to 3 distinct candidate hypotheses based on evidence.\n"
-                "2. supporting_evidence_ids MUST only contain IDs from the provided evidence catalog. DO NOT invent IDs.\n"
+                "2. supporting_evidence_ids MUST cite the actual evidence IDs backing your conclusion.\n"
                 "3. If contradictory evidence exists, cite it in contradictory_evidence_ids.\n"
-                "4. Assign calibrated confidence based on evidence corroboration (0.0 to 1.0).\n"
+                "4. Assign an evidence quality score based on corroboration (0.0 to 1.0).\n"
                 "5. Propose a non-destructive remediation action with human approval required.\n"
                 "6. If evidence is insufficient, set selected_root_cause to 'Inconclusive: Insufficient Evidence' and confidence < 0.5."
             )
@@ -64,26 +63,29 @@ def run_root_cause_agent(state: InvestigationState) -> InvestigationState:
         # Generic, evidence-driven causal synthesis without benchmark-specific keywords
         analysis_dict = _synthesize_from_evidence(incident, evidence_list)
 
-    # Deterministic enforcement: Purge any non-existent evidence IDs to guarantee zero hallucination
-    valid_ids = {e["evidence_id"] for e in evidence_list}
-    filtered_supporting_ids = [eid for eid in analysis_dict.get("supporting_evidence_ids", []) if eid in valid_ids]
-    filtered_contradictory_ids = [eid for eid in analysis_dict.get("contradictory_evidence_ids", []) if eid in valid_ids]
+    # CRITICAL: Preserve raw supporting evidence IDs so Layer 1 verification can detect hallucinations!
+    # Do NOT silently filter out fabricated IDs here!
+    raw_supporting_ids = analysis_dict.get("supporting_evidence_ids", [])
+    raw_contradictory_ids = analysis_dict.get("contradictory_evidence_ids", [])
 
-    # Compute explainable confidence score
-    raw_confidence = float(analysis_dict.get("confidence", 0.5))
-    calibrated_confidence = _calibrate_confidence(
-        base_confidence=raw_confidence,
-        supporting_ids=filtered_supporting_ids,
-        contradictory_ids=filtered_contradictory_ids,
+    valid_ids = {e["evidence_id"] for e in evidence_list}
+    sanitized_supporting_ids = [eid for eid in raw_supporting_ids if eid in valid_ids]
+
+    # Compute explicit, explainable evidence quality score and rationale factors
+    confidence_assessment = _assess_evidence_quality(
+        supporting_ids=raw_supporting_ids,
+        contradictory_ids=raw_contradictory_ids,
         evidence_list=evidence_list
     )
 
     selected_hyp = {
         "selected_root_cause": analysis_dict.get("selected_root_cause", "Inconclusive diagnosis"),
-        "confidence": calibrated_confidence,
-        "supporting_evidence_ids": filtered_supporting_ids,
-        "contradictory_evidence_ids": filtered_contradictory_ids,
-        "reasoning_summary": analysis_dict.get("reasoning_summary", "Synthesized from telemetry findings.")
+        "confidence": confidence_assessment["score"],
+        "supporting_evidence_ids": raw_supporting_ids,  # PRESERVED for Verification Layer 1
+        "sanitized_supporting_evidence_ids": sanitized_supporting_ids,
+        "contradictory_evidence_ids": raw_contradictory_ids,
+        "reasoning_summary": analysis_dict.get("reasoning_summary", "Synthesized from telemetry findings."),
+        "confidence_rationale": confidence_assessment["factors"]
     }
 
     raw_hypotheses = analysis_dict.get("hypotheses", [])
@@ -93,8 +95,8 @@ def run_root_cause_agent(state: InvestigationState) -> InvestigationState:
             "id": h.get("id", "HYP-1"),
             "title": h.get("title", ""),
             "confidence": round(min(max(float(h.get("confidence", 0.5)), 0.0), 1.0), 2),
-            "supporting_evidence_ids": [eid for eid in h.get("supporting_evidence_ids", []) if eid in valid_ids],
-            "contradictory_evidence_ids": [eid for eid in h.get("contradictory_evidence_ids", []) if eid in valid_ids],
+            "supporting_evidence_ids": h.get("supporting_evidence_ids", []),
+            "contradictory_evidence_ids": h.get("contradictory_evidence_ids", []),
             "rationale": h.get("rationale")
         })
 
@@ -110,7 +112,8 @@ def run_root_cause_agent(state: InvestigationState) -> InvestigationState:
 
     state["hypotheses"] = formatted_hypotheses
     state["selected_hypothesis"] = selected_hyp
-    state["confidence"] = selected_hyp["confidence"]
+    state["confidence"] = confidence_assessment["score"]
+    state["confidence_assessment"] = confidence_assessment
     state["recommended_action"] = recommended_action
     state["current_agent"] = "root_cause"
 
@@ -119,42 +122,81 @@ def run_root_cause_agent(state: InvestigationState) -> InvestigationState:
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "iteration": iteration,
         "action": "Evaluated evidence catalog and synthesized causal hypothesis",
-        "findings": f"Selected root cause: '{selected_hyp['selected_root_cause']}' (Confidence: {selected_hyp['confidence']}) with {len(filtered_supporting_ids)} supporting evidence items.",
-        "evidence_used": filtered_supporting_ids
+        "findings": f"Selected root cause: '{selected_hyp['selected_root_cause']}' (Evidence Quality: {confidence_assessment['level']} - {confidence_assessment['score']}) citing {len(raw_supporting_ids)} evidence items.",
+        "evidence_used": raw_supporting_ids
     })
 
     return state
 
 
-def _calibrate_confidence(
-    base_confidence: float,
+def _assess_evidence_quality(
     supporting_ids: List[str],
     contradictory_ids: List[str],
     evidence_list: List[Dict[str, Any]]
-) -> float:
-    """Calibrates confidence based on diversity of independent supporting evidence sources and contradictions."""
-    if not supporting_ids:
-        return 0.20
+) -> Dict[str, Any]:
+    """Computes an explainable evidence quality score and rationale factors.
 
+    Evaluates: item count, independent empirical source diversity, runbook guidance, and contradictions.
+    """
+    factors = []
     evidence_map = {e["evidence_id"]: e for e in evidence_list}
+
+    # Detect if any cited IDs are fabricated
+    fabricated = [eid for eid in supporting_ids if eid not in evidence_map]
+    if fabricated:
+        factors.append(f"Contains non-existent or fabricated evidence citations: {fabricated}")
+        return {
+            "score": 0.15,
+            "level": "LOW",
+            "factors": factors
+        }
+
+    if not supporting_ids:
+        factors.append("Zero supporting evidence items cited.")
+        return {
+            "score": 0.20,
+            "level": "LOW",
+            "factors": factors
+        }
+
     supporting_items = [evidence_map[eid] for eid in supporting_ids if eid in evidence_map]
+    empirical_sources = {item.get("source_type") for item in supporting_items if item.get("source_type") in ("log", "metric", "deployment", "analytics")}
+    has_runbook = any(item.get("source_type") == "runbook" for item in supporting_items)
 
-    # Count distinct source types (e.g. log, metric, deployment, runbook)
-    distinct_sources = {item.get("source_type") for item in supporting_items}
+    score = 0.50
+    factors.append(f"{len(supporting_ids)} supporting evidence items cited.")
 
-    score = base_confidence
+    # Empirical source diversity
+    if len(empirical_sources) >= 2:
+        score += 0.25
+        factors.append(f"Corroborated across {len(empirical_sources)} independent empirical source types: {sorted(list(empirical_sources))}.")
+    elif len(empirical_sources) == 1:
+        score = min(score, 0.60)
+        factors.append(f"Restricted to single empirical source type ({list(empirical_sources)[0]}); lacks multi-source corroboration.")
+    else:
+        score = min(score, 0.30)
+        factors.append("No empirical telemetry backing (only runbook or external references).")
 
-    # Penalty if evidence comes from only a single source type
-    if len(distinct_sources) < 2:
-        score = min(score, 0.65)
-    elif len(distinct_sources) >= 3:
-        score = max(score, 0.85)
+    # Runbook alignment (guidance only, not independent proof)
+    if has_runbook:
+        score += 0.08
+        factors.append("Operational runbook provides documented remediation procedure.")
 
-    # Penalty for unresolved contradictions
+    # Contradictions
     if contradictory_ids:
         score = max(score - 0.25, 0.15)
+        factors.append(f"Unresolved contradictory telemetry detected: {contradictory_ids}.")
+    else:
+        factors.append("No contradictory telemetry detected.")
 
-    return round(min(max(score, 0.10), 0.98), 2)
+    final_score = round(min(max(score, 0.10), 0.95), 2)
+    level = "HIGH" if final_score >= 0.80 else ("MODERATE" if final_score >= 0.50 else "LOW")
+
+    return {
+        "score": final_score,
+        "level": level,
+        "factors": factors
+    }
 
 
 def _synthesize_from_evidence(
@@ -229,40 +271,30 @@ def _synthesize_from_evidence(
     if logs:
         primary_log = logs[0]
         supporting_ids.append(primary_log["evidence_id"])
-        reasoning_parts.append(f"Log analysis revealed: {primary_log['finding']}")
+        reasoning_parts.append(f"Log analysis: {primary_log['finding']}")
 
     if metrics:
         primary_metric = metrics[0]
         supporting_ids.append(primary_metric["evidence_id"])
-        reasoning_parts.append(f"Telemetry metric observed: {primary_metric['finding']}")
+        reasoning_parts.append(f"Telemetry metric: {primary_metric['finding']}")
 
     if deployments:
         primary_dep = deployments[0]
         supporting_ids.append(primary_dep["evidence_id"])
-        reasoning_parts.append(f"Correlated release: {primary_dep['finding']}")
+        reasoning_parts.append(f"Release correlation: {primary_dep['finding']}")
 
     if runbooks:
         primary_runbook = runbooks[0]
         supporting_ids.append(primary_runbook["evidence_id"])
-        reasoning_parts.append(f"Operational runbook reference: {primary_runbook['finding']}")
+        reasoning_parts.append(f"Runbook guidance: {primary_runbook['finding']}")
 
-    # Formulate root cause title directly from strongest observed evidence findings
+    # Formulate root cause title directly from observed evidence findings
     lead_finding = logs[0]["finding"] if logs else (metrics[0]["finding"] if metrics else incident.get("title", ""))
     root_cause_title = f"{service} degradation: {lead_finding}"
 
-    # Calculate explainable confidence based on corroboration
-    score = 0.50
-    if logs and metrics:
-        score += 0.20
-    if deployments:
-        score += 0.10
-    if runbooks:
-        score += 0.08
-    score = round(min(score, 0.92), 2)
-
     return {
         "selected_root_cause": root_cause_title,
-        "confidence": score,
+        "confidence": 0.85 if len(supporting_ids) >= 3 else 0.60,
         "supporting_evidence_ids": supporting_ids,
         "contradictory_evidence_ids": [],
         "reasoning_summary": " | ".join(reasoning_parts),
@@ -270,7 +302,7 @@ def _synthesize_from_evidence(
             {
                 "id": "HYP-1",
                 "title": root_cause_title,
-                "confidence": score,
+                "confidence": 0.85 if len(supporting_ids) >= 3 else 0.60,
                 "supporting_evidence_ids": supporting_ids,
                 "contradictory_evidence_ids": [],
                 "rationale": "Corroborated by observed telemetry and runbook guidance."

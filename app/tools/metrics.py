@@ -7,14 +7,19 @@ from app.db.models import Metric
 def get_service_metrics(
     service: str,
     metric_name: Optional[str] = None,
+    window_minutes: Optional[int] = None,
     limit: int = 20
 ) -> List[Dict[str, Any]]:
-    """Retrieve recent metrics for a service, optionally filtered by metric name."""
+    """Retrieve recent metrics for a service, filtered by metric name and time window."""
     db = SessionLocal()
     try:
         q = db.query(Metric).filter(Metric.service == service)
         if metric_name:
             q = q.filter(Metric.metric_name == metric_name)
+        if window_minutes is not None:
+            since = datetime.now(timezone.utc) - timedelta(minutes=window_minutes)
+            q = q.filter(Metric.timestamp >= since)
+
         metrics = q.order_by(Metric.timestamp.desc()).limit(limit).all()
 
         return [

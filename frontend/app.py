@@ -11,7 +11,7 @@ st.set_page_config(
 )
 
 st.title("🛡️ IncidentPilot")
-st.caption("Autonomous Multi-Agent Production Incident Response & Triage System (V1)")
+st.caption("Autonomous Multi-Agent Production Incident Response & Triage System")
 
 
 def check_api_health():
@@ -29,71 +29,69 @@ def fetch_incidents():
         resp = requests.get(f"{API_BASE_URL}/incidents", timeout=5)
         if resp.status_code == 200:
             return resp.json()
-        st.sidebar.error(f"API Error: HTTP {resp.status_code}")
-    except requests.exceptions.RequestException as e:
-        st.sidebar.error("⚠️ Backend API Unavailable. Ensure FastAPI server is running on " + API_BASE_URL)
-    return []
+        return []
+    except Exception:
+        return []
 
 
-# Check API availability first
-if not check_api_health():
-    st.error(
-        f"🚨 **Backend API Unreachable**\n\n"
-        f"IncidentPilot frontend strictly communicates via the REST API at `{API_BASE_URL}`. "
-        f"Direct database and agent access from the UI is disabled by design.\n\n"
-        f"To start the backend, run:\n```bash\nuvicorn app.main:app --host 0.0.0.0 --port 8000\n```"
-    )
+def create_incident(title, service, severity, description):
+    """Create incident via FastAPI REST API."""
+    try:
+        resp = requests.post(
+            f"{API_BASE_URL}/incidents",
+            json={
+                "title": title,
+                "service": service,
+                "severity": severity,
+                "description": description
+            },
+            timeout=5
+        )
+        return resp.status_code == 201
+    except Exception:
+        return False
+
+
+# 1. API Health Gating Banner
+api_online = check_api_health()
+if not api_online:
+    st.error(f"⚠️ **FastAPI Backend is Offline or Unreachable** (`{API_BASE_URL}`).")
+    st.info("Start the API server in a separate terminal: `uvicorn app.main:app --host 0.0.0.0 --port 8000`")
     st.stop()
 
-# Sidebar: Incident Selection
+# Sidebar: Incident Creation & Selection
 st.sidebar.header("Incident Management")
 incidents = fetch_incidents()
-incident_options = {f"[{i['id']}] {i['service']} - {i['title'][:45]}...": i for i in incidents}
 
-selected_label = st.sidebar.selectbox(
-    "Select Active Incident:",
-    options=list(incident_options.keys()) if incident_options else ["No incidents available"]
-)
+selected_incident_id = None
+if incidents:
+    incident_options = {
+        f"[{inc['id']}] {inc['service']}: {inc['title'][:40]}... ({inc['status']})": inc['id']
+        for inc in incidents
+    }
+    selected_label = st.sidebar.selectbox("Select Production Incident", list(incident_options.keys()))
+    selected_incident_id = incident_options.get(selected_label)
+else:
+    st.sidebar.warning("No incidents found in database. Seed database or create one below.")
 
-# Sidebar: Create New Incident Form
 with st.sidebar.expander("➕ Report New Incident"):
     with st.form("new_incident_form"):
-        new_title = st.text_input("Title")
-        new_service = st.selectbox(
-            "Service",
-            ["payment-service", "order-service", "auth-service", "notification-service", "user-service", "api-gateway"]
-        )
+        new_title = st.text_input("Incident Title", "High database error rates and latency surge")
+        new_service = st.selectbox("Affected Service", ["payment-service", "order-service", "auth-service", "notification-service", "user-service", "analytics-service"])
         new_severity = st.selectbox("Severity", ["CRITICAL", "HIGH", "MEDIUM", "LOW"])
-        new_desc = st.text_area("Symptoms & Impact Description")
-        submitted = st.form_submit_button("Submit Incident to API")
-
+        new_desc = st.text_area("Symptoms & Context", "Multiple microservices experiencing connection acquisition failures.")
+        submitted = st.form_submit_button("Submit Incident")
         if submitted:
-            if not new_title or not new_desc:
-                st.warning("Please provide both title and description.")
+            if create_incident(new_title, new_service, new_severity, new_desc):
+                st.success("Incident created successfully!")
+                st.rerun()
             else:
-                try:
-                    resp = requests.post(
-                        f"{API_BASE_URL}/incidents",
-                        json={
-                            "title": new_title,
-                            "description": new_desc,
-                            "service": new_service,
-                            "severity": new_severity
-                        },
-                        timeout=5
-                    )
-                    if resp.status_code == 201:
-                        st.success("Incident recorded in backend!")
-                        st.rerun()
-                    else:
-                        st.error(f"Failed to create incident: {resp.text}")
-                except Exception as e:
-                    st.error(f"Failed to reach API: {e}")
+                st.error("Failed to create incident via API.")
 
-# Main View
-if incident_options and selected_label in incident_options:
-    curr_inc = incident_options[selected_label]
+# Main Dashboard
+curr_inc = next((i for i in incidents if i["id"] == selected_incident_id), None)
 
+if curr_inc:
     col_meta1, col_meta2, col_meta3, col_meta4 = st.columns(4)
     with col_meta1:
         st.metric("Incident ID", curr_inc["id"])
@@ -104,9 +102,10 @@ if incident_options and selected_label in incident_options:
     with col_meta4:
         st.metric("Status", curr_inc["status"])
 
-    st.markdown(f"**Description:** {curr_inc['description']}")
+    st.markdown(f"### {curr_inc['title']}")
+    st.write(f"**Description:** {curr_inc['description']}")
+    st.caption(f"Reported at: {curr_inc.get('created_at', 'N/A')}")
 
-    # Trigger Autonomous Investigation
     st.divider()
     if st.button("🚀 Trigger Autonomous Multi-Agent Investigation", type="primary"):
         with st.spinner("Multi-agent system investigating logs, deployments, telemetry metrics, and runbooks..."):
@@ -126,34 +125,69 @@ if incident_options and selected_label in incident_options:
     if inv_data:
         report = inv_data.get("report") or {}
         inv_id = inv_data.get("id")
+        history = report.get("agent_history", [])
 
-        st.subheader("1. Agent Orchestration Trace")
+        # Derive actual executed agents dynamically from execution history
+        executed_agents = set()
+        for h in history:
+            text = (h.get("agent", "") + " " + h.get("action", "")).lower()
+            if "supervisor" in text:
+                executed_agents.add("supervisor")
+            if "log" in text:
+                executed_agents.add("logs")
+            if "deployment" in text:
+                executed_agents.add("deployments")
+            if "metric" in text:
+                executed_agents.add("metrics")
+            if "runbook" in text or "rag" in text:
+                executed_agents.add("runbook")
+            if "root cause" in text:
+                executed_agents.add("root_cause")
+            if "verification" in text:
+                executed_agents.add("verification")
+
+        st.subheader("1. Agent Orchestration Trace (Execution Status)")
         agent_steps = [
-            ("Supervisor Agent", "Created plan & targeted specialist queries"),
-            ("Log Agent", "Extracted log errors & frequency anomalies"),
-            ("Deployment Agent", "Analyzed recent releases & changesets"),
-            ("Metrics Agent", "Evaluated telemetry threshold saturation"),
-            ("Runbook / RAG Agent", "Searched Qdrant vector store for guidance"),
-            ("Root Cause Analyst", "Synthesized evidence-backed hypotheses"),
-            ("Verification Agent", "Two-layer audit & evidence validation")
+            ("supervisor", "Supervisor Agent"),
+            ("logs", "Log Agent"),
+            ("deployments", "Deployment Agent"),
+            ("metrics", "Metrics Agent"),
+            ("runbook", "Runbook / RAG Agent"),
+            ("root_cause", "Root Cause Analyst"),
+            ("verification", "Verification Agent")
         ]
         cols = st.columns(len(agent_steps))
-        for idx, (name, desc) in enumerate(agent_steps):
+        for idx, (key, label) in enumerate(agent_steps):
             with cols[idx]:
-                st.success(f"**{name}**\n\n✅ Executed")
+                if key in executed_agents:
+                    st.success(f"**{label}**\n\n✅ Executed")
+                else:
+                    st.info(f"**{label}**\n\n⏭️ Skipped")
 
-        st.subheader("2. Root Cause Analysis & Calibrated Confidence")
+        st.subheader("2. Root Cause Analysis & Evidence Quality Score")
         selected_hyp = report.get("selected_hypothesis", {})
         verif = report.get("verification_result", {})
+        conf_assessment = report.get("confidence_assessment") or {}
 
         c1, c2 = st.columns([3, 1])
         with c1:
             st.markdown(f"### 🎯 Selected Root Cause: **{selected_hyp.get('selected_root_cause')}**")
             st.write(f"**Reasoning:** {selected_hyp.get('reasoning_summary')}")
             st.markdown(f"**Supporting Evidence IDs:** `{', '.join(selected_hyp.get('supporting_evidence_ids', []))}`")
+
+            # Display explainable confidence factors
+            factors = selected_hyp.get("confidence_rationale") or conf_assessment.get("factors") or []
+            if factors:
+                st.markdown("**Evidence Quality Factors:**")
+                for f in factors:
+                    st.markdown(f"- {f}")
+
         with c2:
-            st.metric("Confidence", f"{int(report.get('confidence', 0.0) * 100)}%")
-            v_status = "VERIFIED ✅" if verif.get("verified") else "CHALLENGED / INSUFFICIENT ⚠️"
+            score = report.get("confidence", 0.0)
+            level = conf_assessment.get("level", "MODERATE")
+            st.metric("Quality Score", f"{int(score * 100)}% ({level})")
+
+            v_status = "VERIFIED ✅" if verif.get("verified") else f"CHALLENGED ⚠️ ({verif.get('challenge_category', 'REJECTED')})"
             st.info(f"Verification: **{v_status}**")
             st.caption(verif.get("explanation", ""))
 
@@ -195,6 +229,8 @@ if incident_options and selected_label in incident_options:
                             st.session_state[f"inv_{curr_inc['id']}"] = resp.json()
                             st.success("Approval recorded in backend database!")
                             st.rerun()
+                        else:
+                            st.error(f"Failed to record approval: {resp.text}")
                     except Exception as e:
                         st.error(f"Failed to record approval: {e}")
 
@@ -214,6 +250,8 @@ if incident_options and selected_label in incident_options:
                             st.session_state[f"inv_{curr_inc['id']}"] = resp.json()
                             st.warning("Rejection and escalation recorded in backend database!")
                             st.rerun()
+                        else:
+                            st.error(f"Failed to record rejection: {resp.text}")
                     except Exception as e:
                         st.error(f"Failed to record rejection: {e}")
 

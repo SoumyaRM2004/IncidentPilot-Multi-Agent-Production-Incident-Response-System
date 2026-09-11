@@ -13,7 +13,7 @@ def get_recent_deployments(
     db = SessionLocal()
     try:
         q = db.query(Deployment).filter(Deployment.service == service)
-        if window_minutes:
+        if window_minutes is not None:
             since = datetime.now(timezone.utc) - timedelta(minutes=window_minutes)
             q = q.filter(Deployment.deployed_at >= since)
 

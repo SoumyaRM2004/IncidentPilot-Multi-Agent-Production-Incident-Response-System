@@ -88,5 +88,15 @@
     "expected_root_cause_keywords": ["insufficient", "inconclusive", "missing", "telemetry", "telemetry data"],
     "expected_evidence_types": [],
     "expected_verification": false
+  },
+  {
+    "id": "INC-010",
+    "category": "contradictory",
+    "service": "ghost-nonexistent-service",
+    "title": "Uncorroborated anomaly report on unknown subsystem",
+    "description": "Diagnostic alert triggered without empirical corroboration across telemetry silos.",
+    "expected_root_cause_keywords": ["inconclusive", "insufficient", "unproven"],
+    "expected_evidence_types": [],
+    "expected_verification": false
   }
 ]

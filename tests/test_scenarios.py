@@ -1,7 +1,7 @@
 from app.graph.workflow import run_investigation
 
 
-def test_scenario_1_database_pool_exhaustion(db_session):
+def test_scenario_1_database_pool_exhaustion(db_session, mock_layer2_verified):
     incident = {
         "id": "INC-001",
         "title": "Elevated HTTP 500 errors and transaction timeouts on payment processing",
@@ -18,7 +18,7 @@ def test_scenario_1_database_pool_exhaustion(db_session):
     assert state["recommended_action"]["human_approval_required"] is True
 
 
-def test_scenario_2_bad_deployment(db_session):
+def test_scenario_2_bad_deployment(db_session, mock_layer2_verified):
     incident = {
         "id": "INC-002",
         "title": "Order checkout failures surging following release v2.4.1",
@@ -32,7 +32,7 @@ def test_scenario_2_bad_deployment(db_session):
     assert len(state["selected_hypothesis"]["supporting_evidence_ids"]) >= 2
 
 
-def test_paraphrased_incident_no_keyword_dependency(db_session):
+def test_paraphrased_incident_no_keyword_dependency(db_session, mock_layer2_verified):
     """Test incident with completely rephrased symptoms to prove zero dependency on hardcoded strings."""
     paraphrased_incident = {
         "id": "INC-PARA-01",
@@ -60,7 +60,6 @@ def test_insufficient_evidence_safely_terminates(db_session):
         "severity": "LOW"
     }
     state = run_investigation(empty_incident)
-    # The investigation must conclude with INSUFFICIENT_EVIDENCE
     assert state["investigation_status"] in ("INSUFFICIENT_EVIDENCE", "INVESTIGATION_FAILED")
     assert state["verification_result"]["verified"] is False
     assert state["confidence"] <= 0.50

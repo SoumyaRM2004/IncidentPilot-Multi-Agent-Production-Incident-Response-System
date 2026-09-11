@@ -7,13 +7,14 @@ from app.tools.deployments import get_recent_deployments, get_deployment_details
 def run_deployment_agent(state: InvestigationState) -> InvestigationState:
     """Deployment Investigation Agent: Inspects releases and changesets based on Supervisor plan."""
     plan = state.get("investigation_plan", {})
-    required_agents = plan.get("required_agents", ["deployments"])
     service = state["incident"].get("service", "")
     iteration = state.get("iteration_count", 0)
 
-    # Skip if supervisor plan did not select deployments
-    if "deployments" not in required_agents:
-        return state
+    # Track executed specialist in state
+    if "executed_specialists" not in state:
+        state["executed_specialists"] = []
+    if "deployments" not in state["executed_specialists"]:
+        state["executed_specialists"].append("deployments")
 
     window_minutes = plan.get("window_minutes")
     deployments = get_recent_deployments(service=service, limit=3, window_minutes=window_minutes)
@@ -29,7 +30,7 @@ def run_deployment_agent(state: InvestigationState) -> InvestigationState:
     state["current_agent"] = "deployments"
 
     summary_findings = (
-        f"Inspected deployments for {service}. Found {len(deployments)} relevant deployments. "
+        f"Inspected deployments for {service} (window: {window_minutes or 'all'}m). Found {len(deployments)} relevant deployments. "
         f"Most recent: {deployments[0]['details']['version'] if deployments else 'None'}."
     )
 
@@ -37,7 +38,7 @@ def run_deployment_agent(state: InvestigationState) -> InvestigationState:
         "agent": "Deployment Investigation Agent",
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "iteration": iteration,
-        "action": f"Executed get_recent_deployments for {service}",
+        "action": f"Executed get_recent_deployments for {service} (window: {window_minutes or 'all'}m)",
         "findings": summary_findings,
         "evidence_added": [e["evidence_id"] for e in new_evidence]
     })

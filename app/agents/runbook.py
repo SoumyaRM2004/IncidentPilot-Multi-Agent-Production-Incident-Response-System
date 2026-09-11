@@ -6,16 +6,16 @@ from app.rag.retriever import get_retriever
 
 def run_runbook_agent(state: InvestigationState) -> InvestigationState:
     """Runbook / RAG Agent: Searches Qdrant vector database for matching operational runbooks."""
-    plan = state.get("investigation_plan", {})
-    required_agents = plan.get("required_agents", ["runbook"])
     incident = state["incident"]
     service = incident.get("service", "")
     title = incident.get("title", "")
     iteration = state.get("iteration_count", 0)
 
-    # Skip if supervisor plan did not select runbook
-    if "runbook" not in required_agents:
-        return state
+    # Track executed specialist in state
+    if "executed_specialists" not in state:
+        state["executed_specialists"] = []
+    if "runbook" not in state["executed_specialists"]:
+        state["executed_specialists"].append("runbook")
 
     # Formulate search query using incident title and high-signal log findings
     log_snippets = [
