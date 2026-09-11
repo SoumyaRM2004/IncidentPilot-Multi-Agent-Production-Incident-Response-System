@@ -4,7 +4,7 @@
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.110.0-009688.svg)](https://fastapi.tiangolo.com/)
 [![LangGraph](https://img.shields.io/badge/LangGraph-0.0.30-orange.svg)](https://github.com/langchain-ai/langgraph)
 [![Qdrant](https://img.shields.io/badge/Qdrant-Vector%20DB-red.svg)](https://qdrant.tech/)
-[![Tests](https://img.shields.io/badge/Tests-47%20passed-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/Tests-48%20passed-brightgreen.svg)](tests/)
 
 IncidentPilot is an evidence-grounded multi-agent incident response system designed to investigate simulated production incidents. Built with **Python 3.11, LangGraph, Groq LLM, Qdrant, SQLAlchemy, FastAPI, and Streamlit**, IncidentPilot coordinates specialized investigation agents across logs, metrics, deployment changes, and operational runbooks to formulate, challenge, and verify evidence-backed root cause diagnoses and recommend human-gated remediation actions.
 
@@ -402,10 +402,10 @@ ALL EVALUATION BENCHMARKS PASSED SUCCESSFULLY.
 
 ### Pytest Verification Suite:
 ```
-============================== 47 passed in 2.29s ==============================
+============================== 48 passed in 2.72s ==============================
 - Supervisor allowlist validation, conservative fallback & plan control: 4 tests
 - Dynamic routing & unselected node skipping: 6 tests
-- Telemetry tool window & query parameter filtering: 8 tests
+- Telemetry tool window & query parameter filtering: 9 tests
 - Hallucinated citation preservation & detection: 3 tests
 - Source diversity (empirical domains vs runbook, log+analytics): 5 tests
 - Conservative root-cause fallback & inconclusive handling: 2 tests

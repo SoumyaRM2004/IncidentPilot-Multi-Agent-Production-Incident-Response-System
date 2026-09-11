@@ -36,6 +36,15 @@ def test_get_service_logs():
     assert logs[0]["service"] == "order-service"
 
 
+def test_get_service_logs_window_filtering():
+    """get_service_logs must respect window_minutes parameter."""
+    wide_logs = get_service_logs(service="order-service", window_minutes=600, limit=5)
+    assert len(wide_logs) > 0
+
+    narrow_logs = get_service_logs(service="order-service", window_minutes=0, limit=5)
+    assert len(narrow_logs) == 0
+
+
 def test_deployments_tools():
     deps = get_recent_deployments(service="order-service", limit=5)
     assert len(deps) >= 2

@@ -40,6 +40,10 @@ def route_after_verification(state: InvestigationState) -> Literal["supervisor",
     iteration = state.get("iteration_count", 0)
     max_iterations = state.get("max_iterations", settings.max_investigation_iterations)
 
+    # Invariant: Verification Agent increments iteration_count prior to routing (e.g., 0 -> 1, 1 -> 2).
+    # Thus iteration_count is the target iteration for the upcoming loop.
+    # When max_iterations=2, iteration_count=2 represents the final allowable pass.
+    # Any iteration > max_iterations terminates immediately.
     if iteration <= max_iterations:
         return "supervisor"
 
