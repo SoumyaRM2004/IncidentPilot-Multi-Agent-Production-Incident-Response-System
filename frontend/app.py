@@ -255,7 +255,10 @@ if curr_inc:
                 }
                 for e in evidence_list
             ]
-            st.dataframe(table_data, use_container_width=True)
+            try:
+                st.dataframe(table_data, width="stretch")
+            except (TypeError, ValueError):
+                st.dataframe(table_data, use_container_width=True)
 
         st.subheader("5. Detailed Multi-Agent Trace")
         with st.expander("View Chronological Agent Trace"):
