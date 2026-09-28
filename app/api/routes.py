@@ -67,6 +67,13 @@ def get_incident(incident_id: str, db: Session = Depends(get_db)):
     return incident
 
 
+@router.get("/incidents/{incident_id}/investigations", response_model=List[InvestigationResponse], tags=["Incidents", "Investigations"])
+def list_incident_investigations(incident_id: str, db: Session = Depends(get_db)):
+    """Retrieve all investigations associated with a specific incident, newest first."""
+    invs = db.query(Investigation).filter(Investigation.incident_id == incident_id).order_by(Investigation.started_at.desc()).all()
+    return [_format_investigation_response(inv) for inv in invs]
+
+
 @router.post("/incidents/{incident_id}/investigate", response_model=InvestigationResponse, tags=["Investigations"])
 def start_investigation(incident_id: str, db: Session = Depends(get_db)):
     """Trigger the autonomous multi-agent LangGraph investigation for an incident."""
