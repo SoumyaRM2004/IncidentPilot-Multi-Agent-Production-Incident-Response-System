@@ -1,8 +1,11 @@
 import os
 import json
+import logging
 from datetime import datetime, timezone, timedelta
 from app.db.database import SessionLocal, init_db
 from app.db.models import Incident, Deployment, Log, Metric
+
+logger = logging.getLogger(__name__)
 
 SEED_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data", "seed_data.json")
 
@@ -82,7 +85,7 @@ def seed_database(seed_file_path: str = SEED_FILE):
         db.add_all(metrics)
 
         db.commit()
-        print(f"Successfully seeded database: {len(incidents)} incidents, {len(deployments)} deployments, {len(logs)} logs, {len(metrics)} metrics.")
+        logger.info(f"Seeded database: {len(incidents)} incidents, {len(deployments)} deployments, {len(logs)} logs, {len(metrics)} metrics.")
     finally:
         db.close()
 

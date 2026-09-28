@@ -1,15 +1,60 @@
 import os
+from pathlib import Path
 import pytest
 from unittest.mock import patch
-from fastapi.testclient import TestClient
-from app.db.database import SessionLocal, init_db, Base, engine
+from sqlalchemy import create_engine
+
+# Configure isolated test database BEFORE app imports or models load
+TEST_DB_PATH = Path(__file__).resolve().parent.parent / "test_incidentpilot.db"
+TEST_DATABASE_URL = f"sqlite:///{TEST_DB_PATH.as_posix()}"
+os.environ["DATABASE_URL"] = TEST_DATABASE_URL
+
+from app.config import settings
+settings.database_url = TEST_DATABASE_URL
+
+from app.db import database as app_db
+from app.db.database import SessionLocal, init_db, Base
 from app.db.seed import seed_database
 from app.main import app
+from fastapi.testclient import TestClient
+
+# Create isolated test engine and rebind application engine and SessionLocal
+test_connect_args = {"check_same_thread": False} if TEST_DATABASE_URL.startswith("sqlite") else {}
+test_engine = create_engine(TEST_DATABASE_URL, connect_args=test_connect_args)
+app_db.engine = test_engine
+app_db.SessionLocal.configure(bind=test_engine)
+engine = test_engine
+
+
+def _override_get_db():
+    db = app_db.SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+app.dependency_overrides[app_db.get_db] = _override_get_db
 
 
 @pytest.fixture(scope="session", autouse=True)
 def setup_test_database():
-    """Initializes and seeds database once for test session with fresh schema."""
+    """Initializes and seeds isolated test database once for test session with fresh schema."""
+    live_db_name = "incidentpilot.db"
+    test_db_name = "test_incidentpilot.db"
+    engine_url_str = str(engine.url)
+
+    assert test_db_name in engine_url_str, (
+        f"CRITICAL SAFETY VIOLATION: Test database engine must point to {test_db_name}, got {engine_url_str}"
+    )
+    db_file_name = Path(engine.url.database).name if engine.url.database else ""
+    assert db_file_name == test_db_name, (
+        f"CRITICAL SAFETY VIOLATION: Expected database file {test_db_name}, got {db_file_name}!"
+    )
+    assert db_file_name != live_db_name, (
+        f"CRITICAL SAFETY VIOLATION: Test engine must NOT point to live {live_db_name}!"
+    )
+
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
     seed_database()

@@ -1,5 +1,7 @@
 import json
 import logging
+import threading
+import time
 from typing import Dict, Any, Optional, Type
 from pydantic import BaseModel, ValidationError
 from groq import Groq, RateLimitError
@@ -15,32 +17,52 @@ class LLMRateLimitError(Exception):
         self.message = message
 
 
+_rate_limit_lock = threading.Lock()
 _rate_limit_active: bool = False
 _rate_limit_reason: Optional[str] = None
+_rate_limit_timestamp: float = 0.0
 
 
-def is_rate_limited() -> bool:
-    """Check if the Groq LLM API is currently rate-limited."""
-    return _rate_limit_active
+def is_rate_limited(cooldown_seconds: Optional[float] = None) -> bool:
+    """Check if the Groq LLM API is currently rate-limited, automatically expiring after cooldown."""
+    global _rate_limit_active, _rate_limit_reason, _rate_limit_timestamp
+    with _rate_limit_lock:
+        if not _rate_limit_active:
+            return False
+
+        cooldown = cooldown_seconds if cooldown_seconds is not None else settings.groq_rate_limit_cooldown_seconds
+        if time.time() - _rate_limit_timestamp >= cooldown:
+            _rate_limit_active = False
+            _rate_limit_reason = None
+            _rate_limit_timestamp = 0.0
+            return False
+
+        return True
 
 
 def get_rate_limit_reason() -> Optional[str]:
     """Retrieve the concise recorded rate-limit reason if active."""
-    return _rate_limit_reason
+    if is_rate_limited():
+        return _rate_limit_reason
+    return None
 
 
-def set_rate_limited(reason: str) -> None:
-    """Mark the LLM API as rate-limited with a specific diagnostic reason."""
-    global _rate_limit_active, _rate_limit_reason
-    _rate_limit_active = True
-    _rate_limit_reason = reason
+def set_rate_limited(reason: str, timestamp: Optional[float] = None) -> None:
+    """Mark the LLM API as rate-limited with a specific diagnostic reason and timestamp."""
+    global _rate_limit_active, _rate_limit_reason, _rate_limit_timestamp
+    with _rate_limit_lock:
+        _rate_limit_active = True
+        _rate_limit_reason = reason
+        _rate_limit_timestamp = time.time() if timestamp is None else timestamp
 
 
 def reset_rate_limit_state() -> None:
-    """Reset the LLM rate limit state (primarily for test isolation)."""
-    global _rate_limit_active, _rate_limit_reason
-    _rate_limit_active = False
-    _rate_limit_reason = None
+    """Reset the LLM rate limit state (for test isolation and manual override)."""
+    global _rate_limit_active, _rate_limit_reason, _rate_limit_timestamp
+    with _rate_limit_lock:
+        _rate_limit_active = False
+        _rate_limit_reason = None
+        _rate_limit_timestamp = 0.0
 
 
 def is_rate_limit_error(e: Exception) -> bool:

@@ -1,11 +1,16 @@
+import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from app import __version__
+from app.config import settings
 from app.db.database import init_db, SessionLocal
 from app.db.models import Incident
 from app.db.seed import seed_database
 from app.rag.retriever import get_retriever
 from app.api.routes import router
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -24,7 +29,7 @@ async def lifespan(app: FastAPI):
     try:
         get_retriever()
     except Exception as e:
-        print(f"Notice: Qdrant retriever initialization deferred: {e}")
+        logger.info(f"Qdrant retriever initialization deferred: {e}")
 
     yield
 
@@ -32,15 +37,15 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="IncidentPilot API",
     description="Autonomous Production Incident Response Agent Engine",
-    version="1.0.0",
+    version=__version__,
     lifespan=lifespan
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=settings.allowed_origins,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
 

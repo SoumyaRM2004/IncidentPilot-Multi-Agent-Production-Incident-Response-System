@@ -1,7 +1,9 @@
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, List
 from app.graph.state import InvestigationState
 from app.tools.logs import search_logs, get_error_frequency, get_service_logs
+from app.utils import normalize_timestamp
+from app.config import settings
 
 
 def run_log_agent(state: InvestigationState) -> InvestigationState:
@@ -20,12 +22,28 @@ def run_log_agent(state: InvestigationState) -> InvestigationState:
     log_query = plan.get("log_query")
 
     incident = state.get("incident", {})
-    end_time = incident.get("reported_at") or incident.get("created_at")
+    reported_at = incident.get("reported_at") or incident.get("created_at")
+    investigation_time = incident.get("investigation_started_at") or incident.get("investigation_time")
+
+    start_time = None
+    end_time = None
+
+    if reported_at:
+        reported_dt = normalize_timestamp(reported_at)
+        start_time = reported_dt - timedelta(minutes=window_minutes)
+        grace_minutes = settings.telemetry_post_report_grace_minutes
+        # Bounded post-report triage window: permits telemetry emitted shortly after reported_at
+        # during initial triage or delayed by ingestion/flush intervals, while bounding historical queries
+        end_time = reported_dt + timedelta(minutes=grace_minutes)
+    elif investigation_time:
+        inv_dt = normalize_timestamp(investigation_time)
+        end_time = inv_dt
+        start_time = inv_dt - timedelta(minutes=window_minutes)
 
     # Deterministic log inspections
-    error_freq = get_error_frequency(service=service, minutes=window_minutes, end_time=end_time)
-    error_logs = search_logs(service=service, query=log_query, level="ERROR", window_minutes=window_minutes, end_time=end_time, limit=5)
-    service_logs = get_service_logs(service=service, window_minutes=window_minutes, end_time=end_time, limit=5) if not error_logs else []
+    error_freq = get_error_frequency(service=service, minutes=window_minutes, end_time=end_time, start_time=start_time)
+    error_logs = search_logs(service=service, query=log_query, level="ERROR", window_minutes=window_minutes, end_time=end_time, start_time=start_time, limit=5)
+    service_logs = get_service_logs(service=service, window_minutes=window_minutes, end_time=end_time, start_time=start_time, limit=5) if not error_logs else []
 
     new_evidence = []
 

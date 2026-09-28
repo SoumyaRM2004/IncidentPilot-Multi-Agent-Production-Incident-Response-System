@@ -10,7 +10,6 @@ logger = logging.getLogger(__name__)
 
 
 class RunbookRetriever:
-    _instance = None
 
     def __init__(self):
         self.embedding_model = TextEmbedding(model_name=settings.embedding_model_name)

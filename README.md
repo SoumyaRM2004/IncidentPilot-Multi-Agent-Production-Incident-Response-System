@@ -479,7 +479,8 @@ source .venv/bin/activate
 
 # Install dependencies
 pip install --upgrade pip
-pip install -r requirements.txt
+pip install -r requirements-dev.txt   # for development (includes pytest)
+pip install -r requirements.txt       # for production
 ```
 
 ### 2. Configure Environment Variables

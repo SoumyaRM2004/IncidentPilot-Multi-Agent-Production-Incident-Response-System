@@ -256,3 +256,125 @@ def test_verification_does_not_loop_when_rate_limited():
     assert state["iteration_count"] == 0
     assert state["investigation_status"] == "INSUFFICIENT_EVIDENCE"
     assert state["recommended_action"]["approval_status"] == "ESCALATED"
+
+
+# ==============================================================================
+# 5. RATE-LIMIT CIRCUIT BREAKER EXPIRATION & COOLDOWN TESTS
+# ==============================================================================
+
+def test_circuit_breaker_cooldown_and_probing():
+    """Verify:
+    1. 429 activates breaker and records timestamp.
+    2. Calls while breaker active make zero additional Groq requests.
+    3. Expired cooldown automatically unlatches breaker and permits a new Groq request.
+    4. Manual reset still works.
+    """
+    import time
+    from app.config import settings
+    from app.agents import llm
+
+    reset_rate_limit_state()
+    assert not is_rate_limited()
+
+    mock_client = MagicMock()
+    mock_resp = MagicMock()
+    mock_resp.status_code = 429
+    rate_limit_exc = RateLimitError(
+        message="TPD limit reached",
+        response=mock_resp,
+        body={"error": {"message": "Rate limit reached"}}
+    )
+    mock_client.chat.completions.create.side_effect = rate_limit_exc
+
+    # 1. 429 activates breaker
+    with patch("app.agents.llm.get_groq_client", return_value=mock_client):
+        with pytest.raises(LLMRateLimitError):
+            call_groq_json("system", "user")
+
+    assert is_rate_limited()
+    assert mock_client.chat.completions.create.call_count == 1
+
+    # 2. Calls while active make ZERO additional Groq requests
+    with patch("app.agents.llm.get_groq_client", return_value=mock_client):
+        with pytest.raises(LLMRateLimitError):
+            call_groq_json("system", "user")
+    assert mock_client.chat.completions.create.call_count == 1  # Still 1!
+
+    # 3. Fast-forward past cooldown window
+    llm._rate_limit_timestamp = time.time() - (settings.groq_rate_limit_cooldown_seconds + 10)
+    assert not is_rate_limited()  # Breaker automatically expired!
+
+    # 4. Now a new Groq call can be attempted
+    mock_success_response = MagicMock()
+    mock_choice = MagicMock()
+    mock_choice.message.content = '{"status": "ok"}'
+    mock_success_response.choices = [mock_choice]
+    mock_client.chat.completions.create.side_effect = None
+    mock_client.chat.completions.create.return_value = mock_success_response
+
+    with patch("app.agents.llm.get_groq_client", return_value=mock_client):
+        res = call_groq_json("system", "user")
+        assert res == {"status": "ok"}
+        assert mock_client.chat.completions.create.call_count == 2  # New request succeeded!
+
+    # 5. Manual reset still works
+    set_rate_limited("Test reason")
+    assert is_rate_limited()
+    reset_rate_limit_state()
+    assert not is_rate_limited()
+    assert get_rate_limit_reason() is None
+
+
+# ==============================================================================
+# 6. TEST DATABASE ISOLATION REGRESSION TEST
+# ==============================================================================
+
+def test_database_isolation_from_live_database():
+    """Verify that test engine and SessionLocal point to test_incidentpilot.db,
+
+    and never to live incidentpilot.db.
+    """
+    from app.db import database as app_db
+    engine_url = str(app_db.engine.url)
+
+    assert "test_incidentpilot.db" in engine_url
+    assert not engine_url.endswith("/incidentpilot.db")
+    assert not engine_url.endswith("\\incidentpilot.db")
+
+
+# ==============================================================================
+# 7. INC-002 METRICS RETRIEVAL REGRESSION TEST
+# ==============================================================================
+
+def test_inc_002_seeded_metrics_retrieval(db_session):
+    """Verify that seeded order-service metrics for INC-002 are retrieved
+
+    under the bounded post-report telemetry window.
+    """
+    from app.db.models import Incident
+    from app.agents.metrics import run_metrics_agent
+
+    incident_rec = db_session.query(Incident).filter(Incident.id == "INC-002").first()
+    assert incident_rec is not None, "INC-002 must be seeded in test database"
+
+    state = create_initial_state({
+        "id": incident_rec.id,
+        "title": incident_rec.title,
+        "description": incident_rec.description,
+        "service": incident_rec.service,
+        "severity": incident_rec.severity,
+        "reported_at": incident_rec.created_at.isoformat()
+    })
+    state["investigation_plan"] = {
+        "focus": "Inspect order-service database latency and error rate",
+        "strategy": "Query order-service metrics",
+        "required_agents": ["metrics"],
+        "window_minutes": 60
+    }
+
+    state = run_metrics_agent(state)
+
+    collected_metrics = [e for e in state["collected_evidence"] if e.get("source_type") == "metric"]
+    assert len(collected_metrics) > 0, "Seeded INC-002 metrics must be retrieved within the triage window!"
+    metric_names = [m.get("details", {}).get("metric_name") for m in collected_metrics]
+    assert any("latency" in name or "error" in name for name in metric_names if name)

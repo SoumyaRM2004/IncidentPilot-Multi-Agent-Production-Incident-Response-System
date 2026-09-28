@@ -1,21 +1,36 @@
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union
 from datetime import datetime, timezone, timedelta
 from app.db.database import SessionLocal
 from app.db.models import Deployment
+from app.utils import normalize_timestamp
 
 
 def get_recent_deployments(
     service: str,
     limit: int = 5,
-    window_minutes: Optional[int] = None
+    window_minutes: Optional[int] = None,
+    end_time: Optional[Union[datetime, str]] = None,
+    start_time: Optional[Union[datetime, str]] = None,
 ) -> List[Dict[str, Any]]:
     """Retrieve recent deployments for a specific service with optional time window."""
     db = SessionLocal()
     try:
         q = db.query(Deployment).filter(Deployment.service == service)
-        if window_minutes is not None:
-            since = datetime.now(timezone.utc) - timedelta(minutes=window_minutes)
-            q = q.filter(Deployment.deployed_at >= since)
+
+        end_dt = normalize_timestamp(end_time)
+        start_dt = normalize_timestamp(start_time)
+
+        if start_dt is not None and end_dt is not None:
+            q = q.filter(Deployment.deployed_at >= start_dt, Deployment.deployed_at <= end_dt)
+        elif start_dt is not None:
+            q = q.filter(Deployment.deployed_at >= start_dt)
+        elif window_minutes is not None:
+            if end_dt is None:
+                end_dt = datetime.now(timezone.utc)
+            start_dt = end_dt - timedelta(minutes=window_minutes)
+            q = q.filter(Deployment.deployed_at >= start_dt, Deployment.deployed_at <= end_dt)
+        elif end_dt is not None:
+            q = q.filter(Deployment.deployed_at <= end_dt)
 
         deployments = q.order_by(Deployment.deployed_at.desc()).limit(limit).all()
 

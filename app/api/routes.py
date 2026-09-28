@@ -99,7 +99,8 @@ def start_investigation(incident_id: str, db: Session = Depends(get_db)):
         "service": incident.service,
         "severity": incident.severity,
         "created_at": reported_at_str,
-        "reported_at": reported_at_str
+        "reported_at": reported_at_str,
+        "investigation_started_at": now.isoformat()
     }
 
     try:
@@ -167,40 +168,60 @@ def get_investigation(investigation_id: str, db: Session = Depends(get_db)):
     return _format_investigation_response(inv)
 
 
-@router.post("/investigations/{investigation_id}/approve", response_model=InvestigationResponse, tags=["Approval"])
-def approve_investigation(investigation_id: str, payload: ApprovalDecisionRequest, db: Session = Depends(get_db)):
-    """Record persistent operator approval of proposed remediation with state transition validation."""
+def _process_approval_decision(
+    investigation_id: str,
+    decision: str,
+    payload: ApprovalDecisionRequest,
+    db: Session,
+) -> Dict[str, Any]:
+    """Shared logic for recording an operator's approval or rejection decision.
+
+    Args:
+        investigation_id: The investigation to update.
+        decision: Either "APPROVED" or "REJECTED".
+        payload: The operator's request body.
+        db: Active database session.
+
+    Returns:
+        Formatted investigation response dict.
+
+    Raises:
+        HTTPException: If investigation not found or state transition is invalid.
+    """
     inv = db.query(Investigation).filter(Investigation.id == investigation_id).first()
     if not inv:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Investigation '{investigation_id}' not found."
+            detail=f"Investigation '{investigation_id}' not found.",
         )
 
-    # Validate allowed state transitions
-    if inv.approval_status == "APPROVED":
+    # Validate state transitions — an investigation can only be decided once
+    opposite = "REJECTED" if decision == "APPROVED" else "APPROVED"
+    if inv.approval_status == decision:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Investigation is already APPROVED."
+            detail=f"Investigation is already {decision}.",
         )
-    if inv.approval_status == "REJECTED":
+    if inv.approval_status == opposite:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot approve an already REJECTED investigation."
+            detail=f"Cannot {decision.lower()[:-1]}e an already {opposite} investigation.",
+            # "Cannot approve an already REJECTED investigation."
+            # "Cannot reject an already APPROVED investigation."
         )
 
     now = datetime.now(timezone.utc)
-    inv.approval_status = "APPROVED"
-    inv.operator_decision = "APPROVED"
+    inv.approval_status = decision
+    inv.operator_decision = decision
     inv.approved_at = now
     inv.operator_notes = f"Operator: {payload.operator}. Notes: {payload.notes or 'None'}"
 
-    # Update embedded JSON report to reflect persistent approval
+    # Sync the embedded JSON report with the new decision
     if inv.report:
         try:
             report_dict = json.loads(inv.report)
-            report_dict["approval_status"] = inv.approval_status
-            report_dict["operator_decision"] = inv.operator_decision
+            report_dict["approval_status"] = decision
+            report_dict["operator_decision"] = decision
             report_dict["approved_at"] = now.isoformat()
             report_dict["operator_notes"] = inv.operator_notes
             inv.report = json.dumps(report_dict)
@@ -210,50 +231,18 @@ def approve_investigation(investigation_id: str, payload: ApprovalDecisionReques
     db.commit()
     db.refresh(inv)
     return _format_investigation_response(inv)
+
+
+@router.post("/investigations/{investigation_id}/approve", response_model=InvestigationResponse, tags=["Approval"])
+def approve_investigation(investigation_id: str, payload: ApprovalDecisionRequest, db: Session = Depends(get_db)):
+    """Record persistent operator approval of proposed remediation."""
+    return _process_approval_decision(investigation_id, "APPROVED", payload, db)
 
 
 @router.post("/investigations/{investigation_id}/reject", response_model=InvestigationResponse, tags=["Approval"])
 def reject_investigation(investigation_id: str, payload: ApprovalDecisionRequest, db: Session = Depends(get_db)):
-    """Record operator rejection or escalation of proposed remediation with state transition validation."""
-    inv = db.query(Investigation).filter(Investigation.id == investigation_id).first()
-    if not inv:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Investigation '{investigation_id}' not found."
-        )
-
-    # Validate allowed state transitions
-    if inv.approval_status == "REJECTED":
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Investigation is already REJECTED."
-        )
-    if inv.approval_status == "APPROVED":
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot reject an already APPROVED investigation."
-        )
-
-    now = datetime.now(timezone.utc)
-    inv.approval_status = "REJECTED"
-    inv.operator_decision = "REJECTED"
-    inv.approved_at = now
-    inv.operator_notes = f"Operator: {payload.operator}. Notes: {payload.notes or 'None'}"
-
-    if inv.report:
-        try:
-            report_dict = json.loads(inv.report)
-            report_dict["approval_status"] = inv.approval_status
-            report_dict["operator_decision"] = inv.operator_decision
-            report_dict["approved_at"] = now.isoformat()
-            report_dict["operator_notes"] = inv.operator_notes
-            inv.report = json.dumps(report_dict)
-        except Exception as e:
-            logger.warning(f"Could not update embedded report JSON: {e}")
-
-    db.commit()
-    db.refresh(inv)
-    return _format_investigation_response(inv)
+    """Record operator rejection or escalation of proposed remediation."""
+    return _process_approval_decision(investigation_id, "REJECTED", payload, db)
 
 
 def _format_investigation_response(inv: Investigation) -> Dict[str, Any]:
