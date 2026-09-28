@@ -1,565 +1,249 @@
-# IncidentPilot: Evidence-Grounded Multi-Agent Production Incident Investigation and Response System
+# IncidentPilot
 
-[![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/downloads/release/python-3110/)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.110.0-009688.svg)](https://fastapi.tiangolo.com/)
-[![LangGraph](https://img.shields.io/badge/LangGraph-0.0.30-orange.svg)](https://github.com/langchain-ai/langgraph)
-[![Qdrant](https://img.shields.io/badge/Qdrant-Vector%20DB-red.svg)](https://qdrant.tech/)
-[![Tests](https://img.shields.io/badge/Tests-50%20passed-brightgreen.svg)](tests/)
+> **Multi-Agent Production Incident Response & Investigation System**
 
-IncidentPilot is an evidence-grounded multi-agent incident response system designed to investigate simulated production incidents. Built with **Python 3.11, LangGraph, Groq LLM, Qdrant, SQLAlchemy, FastAPI, and Streamlit**, IncidentPilot coordinates specialized investigation agents across logs, metrics, deployment changes, and operational runbooks to formulate, challenge, and verify evidence-backed root cause diagnoses and recommend human-gated remediation actions.
+[![Python 3.11](https://img.shields.io/badge/Python-3.11-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.110.0-009688.svg?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![LangGraph](https://img.shields.io/badge/LangGraph-0.2.0-orange.svg)](https://github.com/langchain-ai/langgraph)
+[![Streamlit](https://img.shields.io/badge/Streamlit-1.33.0-FF4B4B.svg?logo=streamlit&logoColor=white)](https://streamlit.io/)
+[![Qdrant](https://img.shields.io/badge/Qdrant-Vector%20DB-DC2626.svg?logo=qdrant&logoColor=white)](https://qdrant.tech/)
+[![Tests](https://img.shields.io/badge/Tests-67%20passed-brightgreen.svg)]()
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Every diagnostic assertion is backed by strict evidence provenance: hypotheses cite verified telemetry IDs, a deterministic **Two-Layer Verification Agent** audits evidence to eliminate hallucinations, and destructive actions are protected by persistent human-in-the-loop operator approval. Diagnosis does not automatically resolve the incident; successful investigations transition to `ROOT_CAUSE_IDENTIFIED` awaiting operator review.
-
----
-
-## Table of Contents
-1. [Executive Summary](#1-executive-summary)
-2. [Why Multi-Agent SRE Systems Matter](#2-why-multi-agent-sre-systems-matter)
-3. [Core Architecture & Data Flow](#3-core-architecture--data-flow)
-4. [Multi-Agent Design & Responsibilities](#4-multi-agent-design--responsibilities)
-5. [Canonical Evidence Model & Provenance](#5-canonical-evidence-model--provenance)
-6. [Two-Layer Verification Architecture](#6-two-layer-verification-architecture)
-7. [LangGraph Dynamic Routing & Re-investigation Loop](#7-langgraph-dynamic-routing--re-investigation-loop)
-8. [Deterministic Tool Architecture](#8-deterministic-tool-architecture)
-9. [Dense Runbook Retrieval (RAG)](#9-dense-runbook-retrieval-rag)
-10. [Database Schema & Persistent Gating](#10-database-schema--persistent-gating)
-11. [REST API Specification](#11-rest-api-specification)
-12. [Evaluation Benchmark & Empirical Results](#12-evaluation-benchmark--empirical-results)
-13. [Failure Modes & Graceful Degradation](#13-failure-modes--graceful-degradation)
-14. [Strict Architecture Boundaries (Frontend vs Backend)](#14-strict-architecture-boundaries-frontend-vs-backend)
-15. [Setup & Quickstart Guide](#15-setup--quickstart-guide)
-16. [Docker Deployment](#16-docker-deployment)
-17. [Interview Defense & Architectural Tradeoffs](#17-interview-defense--architectural-tradeoffs)
+IncidentPilot is an automated incident investigation and response system built with **LangGraph**, **FastAPI**, and **Streamlit**. It coordinates specialized investigation agents across logs, metrics, deployment changes, and operational runbooks to diagnose production incidents, verify telemetry evidence, and propose human-gated remediation actions.
 
 ---
 
-## 1. Executive Summary
+## Architecture Overview
 
-During production outages, Site Reliability Engineers (SREs) face fragmented telemetry across isolated observability silos: log aggregators, deployment release consoles, time-series metric databases, and internal operational runbooks. Triaging an outage manually under severe time pressure incurs high cognitive load, increasing Mean Time to Resolution (MTTR).
+IncidentPilot models the incident response lifecycle as a stateful, cyclic multi-agent graph with deterministic verification and operator approval gating:
 
-Generic LLM chatbots fail in production SRE workflows because:
-- **Hallucinated Diagnostics**: Chatbots generate plausible-sounding root causes unsupported by actual logs or metrics.
-- **Lack of Evidence Provenance**: Generic models cannot cite deterministic record identifiers for mathematical verification.
-- **Absence of Self-Correction**: When given incomplete or noisy telemetry, chatbots commit to ungrounded guesses rather than triggering targeted re-investigation.
+```mermaid
+flowchart TD
+    A([Incident Alert / Report]) --> B[Supervisor Agent]
+    
+    subgraph Specialists [Specialized Telemetry Agents]
+        C1[Log Agent]
+        C2[Metrics Agent]
+        C3[Deployment Agent]
+        C4[Runbook RAG Agent]
+    end
 
-IncidentPilot solves this by replacing ad-hoc prompt chains with a **deterministic, evidence-grounded multi-agent graph**:
-- Telemetry tools yield structured `EvidenceItem` records with immutable, traceable IDs.
-- Root cause analysis synthesizes hypotheses strictly from empirical findings and computes an explainable **Evidence Quality Score**.
-- A **Two-Layer Verification Agent** enforces deterministic validation (Layer 1) before allowing semantic LLM review (Layer 2).
-- Unselected agents are genuinely skipped via LangGraph conditional routing.
-- Destructive remediations are gated behind persistent operator approval (`PENDING_APPROVAL` $\rightarrow$ `APPROVED` / `REJECTED`).
+    B -->|Plan & Dynamic Routing| Specialists
+    Specialists --> D[Root Cause Analysis]
+    
+    subgraph Verification [Two-Layer Verification]
+        E1[Layer 1: Deterministic Evidence Audit]
+        E2[Layer 2: LLM Plausibility Review]
+    end
 
----
-
-## 2. Why Multi-Agent SRE Systems Matter
-
-| Traditional Chatbot Approach | IncidentPilot Multi-Agent Architecture |
-|---|---|
-| Dumps raw logs and telemetry into a massive prompt context window | Specialized domain agents query filtered time windows deterministically |
-| Hallucinates imaginary log lines and phantom configuration flags | Every cited fact is bound to an immutable `evidence_id` in the database |
-| Single-pass generation with zero validation or cross-checking | Two-layer verification audits citations and challenges flawed hypotheses |
-| Guesswork when evidence is missing or inconclusive | Explicitly terminates with `INSUFFICIENT_EVIDENCE` and low confidence score |
-| Autonomous hallucinations executing unvetted terminal commands | Persistent operator approval gating required for all remediation actions |
-
----
-
-## 3. Core Architecture & Data Flow
-
-```
-                                +-----------------------------+
-                                |     Production Incident     |
-                                +-----------------------------+
-                                               |
-                                               v
-                                +-----------------------------+
-                                |      Supervisor Agent       |
-                                |  (Plan / Allowlist Filter)  |
-                                +-----------------------------+
-                                               |
-                                 route_next_specialist()
-                                               |
-                    +--------------------------+--------------------------+
-                    |                          |                          |
-                    v                          v                          v
-        +-----------------------+  +-----------------------+  +-----------------------+
-        | Log Investigation     |  | Deployment Agent      |  | Metrics Agent         |
-        +-----------------------+  +-----------------------+  +-----------------------+
-                    |                          |                          |
-            search_logs()              get_deployments()          get_service_metrics()
-            error_frequency()          deployment_details()       metric_window()
-                    |                          |                          |
-                    +--------------------------+--------------------------+
-                                               |
-                                               v (if required by plan)
-                                +-----------------------------+
-                                |     Runbook / RAG Agent     |
-                                +-----------------------------+
-                                               |
-                                      Qdrant Vector DB
-                                   (Cosine / bge-small)
-                                               |
-                                               v (route_next_specialist complete)
-                                +-----------------------------+
-                                |  Root Cause Analyst Agent   |
-                                | (Evidence-Driven Synthesis) |
-                                +-----------------------------+
-                                               |
-                                      Ranked Hypotheses
-                                               |
-                                               v
-                                +-----------------------------+
-                                |     Verification Agent      |
-                                |  [Layer 1: Deterministic]   |
-                                |  [Layer 2: Semantic LLM]    |
-                                +-----------------------------+
-                                         /           \
-                                   [PASS]             [FAIL]
-                                     |                   |
-                                     |                   v
-                                     |         Iteration < Max (2)?
-                                     |          /                 \
-                                     |       [YES]               [NO]
-                                     |         |                   |
-                                     |   Re-investigate            v
-                                     |   (Structured Feedbk)  INSUFFICIENT_EVIDENCE
-                                     v
-                        +-----------------------------+
-                        |    Recommended Action       |
-                        +-----------------------------+
-                                     |
-                                     v
-                        +-----------------------------+
-                        |   HUMAN OPERATOR APPROVAL   |
-                        |   (POST /approve or /reject)|
-                        +-----------------------------+
-                                     |
-                                     v
-                        +-----------------------------+
-                        |     Final Incident Report   |
-                        +-----------------------------+
+    D --> Verification
+    
+    Verification -->|Low Confidence / Missing Evidence| B
+    Verification -->|Verified Hypothesis| F[Remediation Plan]
+    
+    F --> G{Human-in-the-Loop Gate}
+    G -->|Approved| H([Incident Resolved / Action Executed])
+    G -->|Rejected / Flagged| I([Operator Follow-up])
 ```
 
 ---
 
-## 4. Multi-Agent Design & Responsibilities
+## Key Features
 
-1. **Supervisor Agent** (`app/agents/supervisor.py`):
-   - Formulates a targeted investigation plan based on incident symptoms and affected services.
-   - Enforces an agent allowlist (`ALLOWED_AGENTS = {"logs", "deployments", "metrics", "runbook"}`).
-   - When the planning LLM is unavailable, uses a conservative deterministic fallback plan (`["logs", "metrics", "runbook"]`), including `deployments` only if release or deployment signals are explicitly indicated in metadata.
-   - Consumes structured verification challenge feedback (`requested_agent_types`, `missing_evidence_types`, `suggested_time_window`) during adaptive re-investigation loops.
-
-2. **Log Investigation Agent** (`app/agents/logs.py`):
-   - Executes deterministic SQL-backed queries against service logs within the requested `window_minutes` and query substring.
-   - Computes error frequency velocity and extracts error clusters and stack traces.
-
-3. **Deployment Agent** (`app/agents/deployments.py`):
-   - Inspects recent releases, versions, commit SHAs, and deployment timestamps within `window_minutes`.
-
-4. **Metrics Agent** (`app/agents/metrics.py`):
-   - Queries telemetry within `window_minutes` for targeted metric names: CPU utilization, memory thresholds, DB pool saturation, network packet loss, and latency percentiles.
-   - SQL query strictly filters timestamps using `Metric.timestamp >= since`.
-
-5. **Runbook / RAG Agent** (`app/agents/runbook.py`):
-   - Performs dense vector semantic retrieval against operational SRE runbooks in Qdrant using FastEmbed (`bge-small-en-v1.5`).
-   - Runbooks provide operational context and documented remediation procedures, but do **not** constitute independent empirical proof of an incident's cause.
-
-6. **Root Cause Analyst Agent** (`app/agents/root_cause.py`):
-   - Synthesizes candidate hypotheses strictly from the collected evidence catalog.
-   - Preserves raw model-produced evidence citations (duplicate sanitized representations removed) so Verification Layer 1 can detect hallucinations.
-   - When LLM inference is unavailable, implements a conservative fallback that produces an explicitly inconclusive hypothesis (`selected_root_cause: "Inconclusive: automated causal inference unavailable"`, confidence ~0.20) rather than inventing ungrounded causal claims.
-   - Computes an explainable, heuristic **Evidence Quality Score** based on citation count, empirical source diversity, and contradictions (not a statistically calibrated probability).
-
-7. **Verification Agent** (`app/agents/verification.py`):
-   - Audits hypotheses against collected evidence using independent two-layer verification.
-   - **Layer 1 (Deterministic, Authoritative)**: Validates that cited IDs exist in collected telemetry, minimum evidence count is met ($\ge 2$), empirical source diversity spans $\ge 2$ independent empirical domains (`log`, `metric`, `deployment`), and no unaddressed contradictions exist. Log-derived analytics counts as part of the `log` domain, and runbooks do not count toward empirical diversity.
-   - **Layer 2 (Semantic Challenge)**: Challenges causal mechanism and plausibility via Groq LLM. If Layer 2 is unavailable or unconfigured, status becomes `VERIFICATION_UNAVAILABLE` (never defaults to `verified=True`). Layer 2 can never override a Layer 1 failure.
+- **Dynamic Multi-Agent Orchestration**: A central **Supervisor** reviews incident symptoms and selectively activates domain specialists (logs, metrics, deployments, runbooks), skipping irrelevant queries.
+- **Evidence-Grounded RCA**: Hypotheses cite concrete telemetry records collected during the investigation. Diagnostic confidence is weighted by an explainable Evidence Quality Score.
+- **Two-Layer Verification**:
+  - **Layer 1 (Deterministic)**: Code-level validation verifying cited IDs exist in the database, match target service scopes, and fall within valid time windows.
+  - **Layer 2 (Semantic)**: LLM-driven adversarial review that evaluates causal plausibility and challenges potential hallucinations.
+- **Runbook RAG**: Automatically retrieves operational runbooks via **FastEmbed** (`BAAI/bge-small-en-v1.5`) and **Qdrant** vector search to recommend established mitigation procedures.
+- **Human-in-the-Loop Gating**: Remediations are advisory and require operator sign-off (`PENDING_APPROVAL` &rarr; `APPROVED` / `REJECTED`) before any action is marked complete.
+- **Decoupled Architecture**: Stateless FastAPI backend exposing clean REST endpoints, with an interactive Streamlit dashboard for real-time triage and review.
 
 ---
 
-## 5. Canonical Evidence Model & Provenance
+## Tech Stack
 
-Every tool and collector emits evidence strictly complying with the canonical Pydantic `EvidenceItem` schema (`app/graph/state.py`):
-
-```python
-class EvidenceItem(BaseModel):
-    evidence_id: str                          # e.g., "LOG-101", "METRIC-1", "DEP-101", "RUNBOOK-01"
-    source_type: Literal["log", "deployment", "metric", "runbook", "analytics"]
-    source: str                               # Origin name (e.g., "application_logs", "service_metrics")
-    service: str                              # Microservice identifier
-    timestamp: Optional[str] = None           # ISO 8601 UTC timestamp
-    finding: str                              # Factual observation summary
-    details: Optional[Dict[str, Any]] = Field(default_factory=dict)  # Raw structured payload
-```
-
-By enforcing this structure across all data collectors:
-- Root Cause Analyst cannot introduce phantom observations without detection.
-- Verification Agent audits cited IDs against the collected catalog using set-intersection operations (`supporting_evidence_ids ⊆ collected_ids`).
+| Component | Technology | Description |
+|---|---|---|
+| **Orchestration** | LangGraph, LangChain Core | Cyclic multi-agent graph with dynamic conditional routing |
+| **LLM Inference** | Groq API (`llama-3.3-70b-versatile`) | Fast causal inference, log reasoning, and adversarial review |
+| **Backend API** | FastAPI, Uvicorn, Pydantic v2 | RESTful service layer with schema validation and CORS |
+| **Vector Search (RAG)** | Qdrant, FastEmbed | Local embeddings (`bge-small-en-v1.5`) & dense runbook retrieval |
+| **Storage & ORM** | SQLAlchemy 2.0, SQLite / PostgreSQL | Relational storage for incidents, telemetry, and investigations |
+| **Frontend** | Streamlit | SRE console with investigation traces and approval actions |
+| **Testing** | Pytest, Pytest-Asyncio | 67 automated unit and integration tests |
 
 ---
 
-## 6. Two-Layer Verification Architecture
+## Project Structure
 
-The Verification Agent separates deterministic mathematical assertions from LLM semantic plausibility checks:
-
-```
-[Candidate Hypothesis + Supporting Evidence IDs]
-                     |
-                     v
-   +------------------------------------+
-   | LAYER 1: Deterministic Validation  |
-   | - Hallucinated ID Check            |
-   | - Minimum Evidence Count (>= 2)    |
-   | - Empirical Source Diversity (>= 2)|
-   | - Telemetry Contradiction Check    |
-   | - Confidence Bounds Check          |
-   +------------------------------------+
-              /              \
-           [PASS]           [FAIL]
-             |                 \
-             v                  \
-   +--------------------+        \
-   | LAYER 2: Semantic  |         \
-   | Verification (LLM) |          \
-   +--------------------+           \
-      /       |        \             \
-   [PASS]  [REJECT]  [UNAVAILABLE]    \
-     |        |            |           \
-  VERIFIED  CHALLENGED  VERIF_UNAVAIL  Deterministic Rejection
-                                      (LLM CANNOT OVERRIDE)
-```
-
-### Layer 1 Checks:
-1. **Hallucination Detection**: Ensures `supporting_evidence_ids` $\subseteq$ `{collected_evidence.evidence_id}`. Any fabricated ID triggers immediate rejection (`FABRICATED_EVIDENCE_ID`).
-2. **Sufficiency Check**: Rejects hypotheses supported by fewer than 2 distinct evidence items (`INSUFFICIENT_EVIDENCE`).
-3. **Empirical Source Diversity**: Requires at least two independent empirical source domains (e.g., logs + metrics, or logs + deployments). Runbook guidance provides operational context and cannot serve as independent empirical proof. Log-derived analytics is treated as part of the log domain, not a separate empirical domain (`LOW_SOURCE_DIVERSITY`).
-4. **Contradiction Detection**: Flags unaddressed contradictory evidence (`UNRESOLVED_CONTRADICTION`).
-5. **Confidence Sanity**: Rejects invalid confidence scores outside `[0.0, 1.0]`.
-6. **Inconclusive Hypothesis Detection**: Rejects empty or explicitly inconclusive root-cause titles (`INSUFFICIENT_EVIDENCE`), ensuring conservative fallback diagnoses cannot falsely pass verification.
-
-### Layer 2 Safety Rule:
-If Layer 2 semantic verification fails or is unavailable (e.g., no Groq API key configured), the system records `VERIFICATION_UNAVAILABLE`. It **never** defaults to `verified = True`. Layer 2 can never override a Layer 1 failure.
-
----
-
-## 7. LangGraph Dynamic Routing & Re-investigation Loop
-
-Dynamic specialist routing is executed via `route_next_specialist` in `app/graph/workflow.py`:
-
-```python
-def route_next_specialist(state: InvestigationState) -> Literal["logs", "deployments", "metrics", "runbook", "root_cause"]:
-    plan = state.get("investigation_plan", {})
-    required = plan.get("required_agents", [])
-    executed = state.get("executed_specialists", [])
-
-    for agent in required:
-        if agent not in executed:
-            return agent
-
-    return "root_cause"
-```
-
-### Routing Guarantees:
-- If the plan specifies `required_agents = ["logs", "metrics"]`, execution routes:
-  `START` $\rightarrow$ `supervisor` $\rightarrow$ `logs` $\rightarrow$ `metrics` $\rightarrow$ `root_cause` $\rightarrow$ `verification`.
-- `deployments` and `runbook` are **never visited**, **never executed**, and **never added to `agent_history`**.
-- Unselected agents appear as `⏭️ Skipped` in the frontend dashboard.
-- Sequential conditional execution is used; no false claims of parallel execution.
-
-### Re-investigation Termination:
-The loop is bounded by `max_iterations = 2`:
-- Iteration 0: Initial plan and execution.
-- Iteration 1: Targeted re-investigation based on structured challenge feedback.
-- Iteration 2: Final re-investigation pass. If verification fails again, execution halts safely with `INSUFFICIENT_EVIDENCE`.
-
----
-
-## 8. Deterministic Tool Architecture
-
-Tools execute parameter-filtered queries directly against database rows and return canonical `EvidenceItem` records:
-
-- **Log Tools** (`app/tools/logs.py`):
-  - `search_logs(service, query, level, window_minutes, limit)`: Returns matching logs with IDs (`LOG-xxx`).
-  - `get_error_frequency(service, minutes)`: Returns time-windowed error frequency metrics (`FREQ-xxx`).
-  - `get_service_logs(service, limit)`: Returns chronological logs within the incident window.
-- **Deployment Tools** (`app/tools/deployments.py`):
-  - `get_recent_deployments(service, limit, window_minutes)`: Returns releases with version tags within `window_minutes` (`DEP-xxx`).
-  - `get_deployment_details(deployment_id)`: Fetches configuration changes and environment variables.
-- **Metrics Tools** (`app/tools/metrics.py`):
-  - `get_service_metrics(service, metric_name, window_minutes, limit)`: Returns time-series points filtered by `window_minutes` (`METRIC-xxx`).
-  - `get_metric_window(service, metric_name, minutes)`: Returns aggregated metric windows.
-
----
-
-## 9. Dense Runbook Retrieval (RAG)
-
-- **Vector Database**: Qdrant (`:memory:` embedded mode for tests and local development; Docker container for production).
-- **Embedding Model**: FastEmbed running `BAAI/bge-small-en-v1.5` (384 dimensions) locally via ONNX Runtime (zero external embedding API costs or network latency).
-- **Section-Aware Chunking**: Markdown runbooks in `data/runbooks/` are split into semantic units indexed by document title, failure category, and remediation procedures (`RUNBOOK-01`, `RUNBOOK-02`, etc.) with similarity scoring.
-
----
-
-## 10. Database Schema & Persistent Gating
-
-PostgreSQL schema implemented via SQLAlchemy (`app/db/models.py`), with SQLite automated fallback for local testing:
-
-```
-+--------------------------------------------------------------------------------+
-|                                 DATABASE SCHEMA                                |
-+--------------------+---------------------+--------------------+----------------+
-|    incidents       |     deployments     |       logs         |    metrics     |
-+--------------------+---------------------+--------------------+----------------+
-| id (PK)            | id (PK)             | id (PK)            | id (PK)        |
-| title              | service             | timestamp (UTC)    | timestamp (UTC)|
-| description        | version             | service            | service        |
-| service            | deployed_at (UTC)   | level              | metric_name    |
-| severity           | environment         | message            | value          |
-| created_at (UTC)   | commit_hash         | trace_id           |                |
-| status             |                     |                    |                |
-+--------------------+---------------------+--------------------+----------------+
-                                           |
-                                           v
-                     +-------------------------------------------+
-                     |              investigations               |
-                     +-------------------------------------------+
-                     | id (PK)                                   |
-                     | incident_id (FK -> incidents.id)          |
-                     | started_at (UTC)                          |
-                     | completed_at (UTC)                        |
-                     | status (SUCCESS | INSUFFICIENT_EVIDENCE)  |
-                     | final_confidence                          |
-                     | report (JSON)                             |
-                     | approval_status (PENDING|APPROVED|REJECTED|
-                     | approved_at (UTC)                         |
-                     | operator_decision                         |
-                     | operator_notes                            |
-                     +-------------------------------------------+
-```
-
-### Lifecycle Semantics:
-- When diagnosis succeeds, incident status is updated to `ROOT_CAUSE_IDENTIFIED` (never `RESOLVED`, because IncidentPilot does not autonomously execute production remediation).
-- Remediation recommendations require persistent operator approval (`POST /investigations/{id}/approve` or `POST /investigations/{id}/reject`).
-- Invalid state transitions (e.g., approving an already approved investigation or approving a rejected one) are rejected with HTTP 400.
-
----
-
-## 11. REST API Specification
-
-FastAPI application exposes clean endpoints with request/response Pydantic models (`app/api/routes.py`):
-
-| Method | Path | Description | Key Request / Response Fields |
-|---|---|---|---|
-| `GET` | `/health` | System health check | `status`, `timestamp`, `service` |
-| `POST` | `/incidents` | Create a new incident | Body: `title`, `service`, `description`, `severity` |
-| `GET` | `/incidents` | List all incidents | Returns array of `IncidentResponse` |
-| `GET` | `/incidents/{id}` | Retrieve incident details | Returns `IncidentResponse` (`status: OPEN / INVESTIGATING / ROOT_CAUSE_IDENTIFIED / INVESTIGATION_FAILED`) |
-| `POST` | `/incidents/{id}/investigate` | Trigger LangGraph multi-agent investigation | Initiates workflow, returns `InvestigationResponse`. Does not leak internal exceptions |
-| `GET` | `/investigations/{id}` | Retrieve investigation results | Returns status, evidence catalog, hypothesis, and approval status |
-| `POST` | `/investigations/{id}/approve` | Persistently approve remediation action | Body: `operator`, `decision="APPROVED"`, `notes`. Validates state transition |
-| `POST` | `/investigations/{id}/reject` | Persistently reject remediation action | Body: `operator`, `decision="REJECTED"`, `notes`. Validates state transition |
-
----
-
-## 12. Evaluation Benchmark & Empirical Results
-
-The system is evaluated against a synthetic benchmark suite of **10 production incidents** across 5 categories (`evaluation/incidents.json`) with seeded telemetry (`data/seed_data.json`):
-1. **Standard Scenarios (5 incidents)**: Ground-truth production failures (DB pool saturation, bad deployment, OOM leak, third-party SMS 504, network degradation).
-2. **Paraphrased Scenarios (2 incidents)**: Completely reworded symptoms to test resilience against prompt variation.
-3. **Noisy Telemetry (1 incident)**: Intermittent warnings and background noise to verify robust signal extraction.
-4. **Insufficient Telemetry (1 incident)**: Missing metrics and logs to verify safe termination without hallucination.
-5. **Contradictory Telemetry (1 incident)**: Alerts without corroborating telemetry to verify rejection.
-
-> [!NOTE]
-> **Evaluation Mode & Benchmark Disclosure**: The benchmark scenarios use synthetic incident descriptions and seeded database telemetry. Evaluation supports two modes:
-> - **`LIVE_LLM_EVALUATION`**: Uses a live Groq API key to exercise full semantic causal inference and Layer 2 challenge verification.
-> - **`OFFLINE_PIPELINE_REGRESSION`**: Uses a deterministic evaluation stub to validate pipeline wiring, database telemetry retrieval, Layer 1 deterministic verification, and expected signal matching without requiring live LLM credentials. The **Expected RCA Signal Match** is a lightweight regression check against expected diagnostic signals, not a statistically calibrated measure of autonomous causal reasoning.
-
-### Empirical Evaluation Output:
-```
-=====================================================================================
-IncidentPilot Multi-Agent Production Incident Response Evaluation
-=====================================================================================
-Successfully seeded database: 5 incidents, 7 deployments, 20 logs, 21 metrics.
-Execution Mode: OFFLINE_PIPELINE_REGRESSION
-Mode Details:   Deterministic evaluation stub / pipeline regression mode (Semantic LLM evaluation not executed).
-=====================================================================================
-
-=====================================================================================
-EVALUATION RESULTS SUMMARY
-=====================================================================================
-ID        | Category        | Service            | Signal | Evidence | Verif | Iters | Score
--------------------------------------------------------------------------------------
-INC-001   | standard        | payment-service    | PASS   | 3/3      | PASS  | 0     | 80%  
-INC-002   | standard        | order-service      | PASS   | 3/3      | PASS  | 0     | 80%  
-INC-003   | standard        | auth-service       | PASS   | 3/3      | PASS  | 0     | 80%  
-INC-004   | standard        | notification-service | PASS   | 3/3      | PASS  | 0     | 80%  
-INC-005   | standard        | user-service       | PASS   | 3/3      | PASS  | 0     | 80%  
-INC-006   | paraphrased     | payment-service    | PASS   | 3/3      | PASS  | 0     | 80%  
-INC-007   | paraphrased     | order-service      | PASS   | 3/3      | PASS  | 0     | 80%  
-INC-008   | noisy           | auth-service       | PASS   | 3/3      | PASS  | 0     | 80%  
-INC-009   | insufficient_telemetry | analytics-service  | PASS   | 0/0      | PASS  | 2     | 20%  
-INC-010   | contradictory   | ghost-nonexistent-service | PASS   | 0/0      | PASS  | 2     | 20%  
-=====================================================================================
-PIPELINE CORRECTNESS & SAFETY METRICS:
-1. Evidence Grounding Rate:          100.0% (24/24 citations grounded in telemetry)
-2. Hallucinated Citation Rejection:  100.0% (24/24 non-fabricated citations)
-3. Empirical Source Diversity:       100.0% (8/8 verified cases with >= 2 empirical domains)
-4. Insufficient Evidence Abstention: 100.0% (2/2 uncorroborated cases safely abstained)
-5. Verification Decision Accuracy:   100.0% (10/10 verdicts matched expected safety criteria)
-6. Avg Iterations to Converge:       0.40
--------------------------------------------------------------------------------------
-RCA REGRESSION METRIC:
-7. Expected RCA Signal Match:        100.0% (10/10 expected diagnostic patterns detected)
-   [Notice: Lightweight regression check based on expected textual signals in synthetic telemetry.
-    It is NOT a statistically validated measure of autonomous causal reasoning accuracy.]
--------------------------------------------------------------------------------------
-SEMANTIC LLM EVALUATION:
-8. Status:                           Semantic LLM evaluation NOT EXECUTED (deterministic pipeline regression mode).
-=====================================================================================
-ALL EVALUATION BENCHMARKS PASSED SUCCESSFULLY.
-```
-
-### Pytest Verification Suite:
-```
-============================== 50 passed in 2.33s ==============================
-- Supervisor allowlist validation, conservative fallback & plan control: 4 tests
-- Dynamic routing, iteration budget & unselected node skipping: 7 tests
-- Telemetry tool window & query parameter filtering: 9 tests
-- Hallucinated citation preservation & detection: 3 tests
-- Source diversity (empirical domains vs runbook, log+analytics): 5 tests
-- Conservative root-cause fallback & inconclusive handling: 2 tests
-- Two-layer verification, Layer 2 unavailability & adversarial causality: 5 tests
-- Database models & schema migrations: 4 tests
-- API lifecycle, approval transitions & sanitized errors: 5 tests
-- Frontend decoupling & execution trace derivation: 2 tests
-- Scenarios (standard, paraphrased, insufficient): 4 tests
+```text
+IncidentPilot/
+├── app/
+│   ├── agents/            # Specialist agents (supervisor, logs, metrics, deployments, etc.)
+│   │   ├── supervisor.py       # Triage and specialist routing logic
+│   │   ├── logs.py             # Log aggregation and query agent
+│   │   ├── metrics.py          # Metric anomaly inspection agent
+│   │   ├── deployments.py      # Deployment and rollback analyzer
+│   │   ├── runbook.py          # Runbook recommendation agent
+│   │   ├── root_cause.py       # RCA synthesis and hypothesis formulation
+│   │   └── verification.py     # Two-layer deterministic and LLM verification
+│   ├── api/               # FastAPI endpoints and Pydantic schemas
+│   ├── db/                # SQLAlchemy database models, connection, and seed scripts
+│   ├── graph/             # LangGraph state definitions and workflow construction
+│   ├── rag/               # Vector retriever and markdown runbook indexer
+│   ├── tools/             # Deterministic tools for querying telemetry data
+│   ├── config.py          # Environment settings (Pydantic Settings)
+│   └── main.py            # FastAPI application entrypoint
+├── data/
+│   ├── runbooks/          # Standard operational procedure runbooks (Markdown)
+│   └── seed_data.json     # Seed telemetry for simulated incidents
+├── evaluation/
+│   ├── incidents.json     # Benchmark evaluation scenarios
+│   └── run_eval.py        # Automated benchmark test harness
+├── frontend/
+│   └── app.py             # Streamlit web dashboard
+├── tests/                 # Complete test suite (67 tests)
+├── docker-compose.yml     # Multi-container orchestration (API, UI, Postgres, Qdrant)
+├── Dockerfile             # Container definition for API and Frontend
+├── requirements.txt       # Production dependencies
+└── requirements-dev.txt   # Development and test dependencies
 ```
 
 ---
 
-## 13. Failure Modes & Graceful Degradation
-
-IncidentPilot treats failure as an expected first-class state:
-- **Zero Hallucination Tolerance**: If an agent references an evidence ID not present in the run's collected evidence catalog, Layer 1 verification fails immediately (`FABRICATED_EVIDENCE_ID`).
-- **Empty Telemetry Handling**: If a service has no logs, metrics, or deployments, confidence is capped at $\le 20\%$ with empty supporting IDs, correctly concluding with `INSUFFICIENT_EVIDENCE`.
-- **Bounded Re-investigation**: The feedback loop is strictly bounded by `max_iterations = 2`, preventing infinite loops.
-- **Contradiction Rejection**: If telemetry directly contradicts a hypothesis, Layer 1 rejects the diagnosis.
-
----
-
-## 14. Strict Architecture Boundaries (Frontend vs Backend)
-
-The frontend (`frontend/app.py`) is designed as a **strictly decoupled HTTP consumer**:
-- **Zero Direct Database Access**: Never imports `SessionLocal`, SQLAlchemy models, or direct database connections.
-- **Zero Direct Workflow Execution**: Never imports LangGraph graphs or agent nodes directly.
-- **API Boundary Enforcement**: All incident listings, trigger investigations, and operator approval actions execute via standard REST calls (`requests.get`, `requests.post`) against FastAPI.
-- **Dynamic Status Rendering**: Inspects backend `agent_history` to display `✅ Executed` vs `⏭️ Skipped` accurately for each specialist agent.
-
----
-
-## 15. Setup & Quickstart Guide
+## Getting Started
 
 ### Prerequisites
-- Python 3.11
-- Git
 
-### 1. Clone & Set Up Environment
+- **Python**: 3.11 or later
+- **Groq API Key**: Obtain a key from [console.groq.com](https://console.groq.com/)
+
+### 1. Clone & Set Up Virtual Environment
+
 ```bash
 git clone https://github.com/SoumyaRM2004/IncidentPilot-Multi-Agent-Production-Incident-Response-System.git
 cd IncidentPilot-Multi-Agent-Production-Incident-Response-System
 
-# Create virtual environment
+# Create and activate virtual environment
 python -m venv .venv
 
-# Activate virtual environment
-# Windows:
-.\.venv\Scripts\activate
-# Linux/macOS:
+# Windows (PowerShell):
+.\.venv\Scripts\Activate.ps1
+
+# Linux / macOS:
 source .venv/bin/activate
 
 # Install dependencies
-pip install --upgrade pip
-pip install -r requirements-dev.txt   # for development (includes pytest)
-pip install -r requirements.txt       # for production
+pip install -r requirements-dev.txt
 ```
 
-### 2. Configure Environment Variables
-Copy `.env.example` to `.env`:
+### 2. Environment Configuration
+
+Copy the example environment configuration:
+
 ```bash
 cp .env.example .env
 ```
-Configure your `.env` file:
+
+Edit `.env` to supply your credentials:
+
 ```env
-GROQ_API_KEY=gsk_your_actual_groq_api_key
+GROQ_API_KEY=gsk_your_groq_api_key_here
 GROQ_MODEL=llama-3.3-70b-versatile
 DATABASE_URL=sqlite:///./incidentpilot.db
 QDRANT_URL=:memory:
 ```
 
-### 3. Run Tests and Evaluation
+### 3. Initialize and Seed the Database
+
+Populate the database with sample production incidents and corresponding telemetry (logs, metrics, deployments):
+
 ```bash
-# Seed the database with telemetry scenarios
 python -m app.db.seed
-
-# Run the full 42-test suite
-pytest -v
-
-# Run the 10-incident benchmark evaluation
-python evaluation/run_eval.py
 ```
-
-### 4. Run Services
-```bash
-# Terminal 1: Launch FastAPI Backend
-uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
-
-# Terminal 2: Launch Streamlit Dashboard
-streamlit run frontend/app.py --server.port 8501
-```
-
-Access the application:
-- **FastAPI OpenAPI Swagger Docs**: `http://localhost:8000/docs`
-- **Streamlit Interactive UI**: `http://localhost:8501`
 
 ---
 
-## 16. Docker Deployment
+## Running the Application
 
-To launch the containerized stack (FastAPI backend, Streamlit frontend, Qdrant vector database, and PostgreSQL):
+IncidentPilot runs as two independent services:
+
+### Option A: Local Development
+
+**Terminal 1 — FastAPI Backend:**
+```bash
+uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+```
+- API Docs (Swagger UI): [http://localhost:8000/docs](http://localhost:8000/docs)
+- Health Check: [http://localhost:8000/health](http://localhost:8000/health)
+
+**Terminal 2 — Streamlit Frontend:**
+```bash
+streamlit run frontend/app.py --server.port 8501
+```
+- Dashboard UI: [http://localhost:8501](http://localhost:8501)
+
+---
+
+### Option B: Docker Compose
+
+Launch the full stack (FastAPI, Streamlit, PostgreSQL, and Qdrant) with a single command:
 
 ```bash
 docker compose up --build
 ```
 
-Services will be accessible at:
-- **FastAPI API**: `http://localhost:8000/docs`
-- **Streamlit Console**: `http://localhost:8501`
-- **Qdrant Dashboard**: `http://localhost:6333/dashboard`
+Services will be mapped to:
+- **FastAPI**: `http://localhost:8000`
+- **Streamlit**: `http://localhost:8501`
+- **Qdrant**: `http://localhost:6333`
 - **PostgreSQL**: `localhost:5432`
 
 ---
 
-## 17. Interview Defense & Architectural Tradeoffs
+## REST API Reference
 
-### 1. Why LangGraph instead of a simple ReAct loop or Autogen?
-> **Answer**: Production incident response requires predictable state progression, strict audit trails, and deterministic branch routing. LangGraph provides an explicit state machine where execution between the Supervisor, specialized agents, Root Cause Analyst, and Verification Agent is strictly governed. ReAct loops often suffer from tool call thrashing and runaway token consumption during high-stress incident triage.
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/health` | Service health status |
+| `GET` | `/incidents` | List all incidents |
+| `POST` | `/incidents` | Create a new incident report |
+| `GET` | `/incidents/{id}` | Get incident details and current status |
+| `POST` | `/incidents/{id}/investigate` | Trigger multi-agent investigation workflow |
+| `GET` | `/investigations/{id}` | Retrieve investigation results and evidence trace |
+| `POST` | `/investigations/{id}/approve` | Persistently approve proposed remediation |
+| `POST` | `/investigations/{id}/reject` | Persistently reject proposed remediation |
 
-### 2. Why Two-Layer Verification instead of asking the LLM "is this correct"?
-> **Answer**: LLMs suffer from confirmation bias and self-evaluation hallucinations. If an LLM fabricates an evidence ID during hypothesis synthesis, asking the same LLM or another prompt if the evidence is sound will often result in a rubber-stamped verification. Layer 1 verification runs deterministic Python code that performs set-intersection checks against database IDs and verifies metric thresholds. The LLM is never allowed to override a Layer 1 failure.
+Interactive API documentation and schema exploration is available at `/docs`.
 
-### 3. How do you prevent hallucinated remediation execution?
-> **Answer**: Destructive actions are never executed autonomously. The system outputs recommendations marked `human_approval_required: true` and sets `approval_status: PENDING_APPROVAL`. Only when an authorized on-call engineer submits an explicit approval via `POST /investigations/{id}/approve` is the action logged as authorized, maintaining compliance with SRE safety standards.
+---
 
-### 4. Why local FastEmbed ONNX instead of external embedding APIs?
-> **Answer**: During an incident response scenario, dependencies on external third-party embedding APIs introduce additional points of failure and network latency. FastEmbed executes the `BAAI/bge-small-en-v1.5` model locally via ONNX Runtime inside the service process, ensuring zero external API latency, zero per-token cost, and zero external dependency failure.
+## Testing & Evaluation
 
-### 5. Why are runbooks treated as operational guidance rather than empirical proof?
-> **Answer**: An operational runbook documents institutional procedures (e.g., "If connection pool fills, restart pool"). However, a runbook semantically matching an incident description does not prove that connection pool exhaustion caused this specific incident. Causal diagnosis requires independent empirical telemetry (logs, metrics, deployments). Runbooks inform diagnostic procedures and remediation selection, but Layer 1 verification requires at least two independent empirical source domains before validating a hypothesis.
+### Running Tests
 
-### 6. What happens when LLM inference fails or is unavailable?
-> **Answer**: Rather than synthesizing an artificial root cause from arbitrary heuristics (e.g. "first log + first metric = cause") or assigning high confidence (0.85), IncidentPilot implements a conservative fallback. It summarizes observed telemetry signals and outputs an explicitly inconclusive hypothesis (`selected_root_cause: "Inconclusive: automated causal inference unavailable"`, confidence ~0.20). Verification Layer 1 flags this as inconclusive (`INSUFFICIENT_EVIDENCE`), ensuring the system explicitly communicates uncertainty rather than fabricating false certainty.
+The test suite covers agent behavior, API contracts, LangGraph routing, deterministic verification, and rate-limit resilience:
+
+```bash
+pytest
+```
+
+### Benchmark Evaluation
+
+To evaluate system performance against 10 synthetic production failure scenarios (standard, noisy, insufficient, and contradictory telemetry):
+
+```bash
+python evaluation/run_eval.py
+```
+
+Evaluation supports both:
+- **Offline Pipeline Mode**: Deterministic check verifying telemetry matching, evidence routing, and Layer 1 verification without API costs.
+- **Live LLM Mode**: Full end-to-end evaluation using live Groq API inference.
 
 ---
 
 ## License
-MIT License. Built for production reliability engineering research and portfolio demonstration.
+
+This project is licensed under the [MIT License](LICENSE).
